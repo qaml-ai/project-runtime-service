@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -39,14 +40,22 @@ type ReadInfo struct {
 }
 
 type Manager struct {
-	workspacesRoot string
+	workspacesRoot     string
+	workspaceMountPath string
+	fileOwnerUID       int
+	fileOwnerGID       int
 }
 
 func NewManager(workspacesRoot string) *Manager {
 	if workspacesRoot == "" {
 		workspacesRoot = defaultWorkspaceRoot()
 	}
-	return &Manager{workspacesRoot: workspacesRoot}
+	return &Manager{
+		workspacesRoot:     workspacesRoot,
+		workspaceMountPath: cleanMountPath(envStringAny([]string{"PROJECT_RUNTIME_WORKSPACE_MOUNT", "CONTAINER_WORKSPACE_MOUNT"}, "/home/claude")),
+		fileOwnerUID:       envIntAny([]string{"PROJECT_RUNTIME_FILE_OWNER_UID", "CONTAINER_UID"}, 1001),
+		fileOwnerGID:       envIntAny([]string{"PROJECT_RUNTIME_FILE_OWNER_GID", "CONTAINER_GID"}, 1001),
+	}
 }
 
 func (m *Manager) ResolveHostPath(name, sandboxPath string) (string, error) {
@@ -57,9 +66,9 @@ func (m *Manager) ResolveHostPath(name, sandboxPath string) (string, error) {
 	wsRoot := filepath.Clean(filepath.Join(m.workspacesRoot, name))
 	cleaned := sandboxPath
 
-	if strings.HasPrefix(cleaned, "/home/claude/") {
-		cleaned = strings.TrimPrefix(cleaned, "/home/claude")
-	} else if cleaned == "/home/claude" {
+	if strings.HasPrefix(cleaned, m.workspaceMountPath+"/") {
+		cleaned = strings.TrimPrefix(cleaned, m.workspaceMountPath)
+	} else if cleaned == m.workspaceMountPath {
 		cleaned = "/"
 	}
 
@@ -102,13 +111,15 @@ func (m *Manager) Write(name, path string, data []byte) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(hostPath), 0o755); err != nil {
+	parentDir := filepath.Dir(hostPath)
+	if err := os.MkdirAll(parentDir, 0o755); err != nil {
 		return err
 	}
+	m.chownWorkspaceFile(parentDir)
 	if err := os.WriteFile(hostPath, data, 0o644); err != nil {
 		return err
 	}
-	_ = os.Chown(hostPath, 1001, 1001)
+	m.chownWorkspaceFile(hostPath)
 	return nil
 }
 
@@ -235,6 +246,7 @@ func (m *Manager) Move(name, source, dest string) error {
 	if err := os.MkdirAll(filepath.Dir(dstPath), 0o755); err != nil {
 		return err
 	}
+	m.chownWorkspaceFile(filepath.Dir(dstPath))
 	return os.Rename(srcPath, dstPath)
 }
 
@@ -246,8 +258,15 @@ func (m *Manager) Mkdir(name, path string) error {
 	if err := os.MkdirAll(hostPath, 0o755); err != nil {
 		return err
 	}
-	_ = os.Chown(hostPath, 1001, 1001)
+	m.chownWorkspaceFile(hostPath)
 	return nil
+}
+
+func (m *Manager) chownWorkspaceFile(path string) {
+	if m.fileOwnerUID < 0 && m.fileOwnerGID < 0 {
+		return
+	}
+	_ = os.Chown(path, m.fileOwnerUID, m.fileOwnerGID)
 }
 
 func (m *Manager) Exists(name, path string) (ExistsResult, error) {
@@ -290,4 +309,37 @@ func defaultWorkspaceRoot() string {
 		return ".sandbox-host/workspaces"
 	}
 	return filepath.Join(wd, ".sandbox-host", "workspaces")
+}
+
+func cleanMountPath(path string) string {
+	cleaned := filepath.ToSlash(filepath.Clean("/" + strings.TrimSpace(path)))
+	if cleaned == "." || cleaned == "/" {
+		return "/"
+	}
+	return cleaned
+}
+
+func envStringAny(keys []string, fallback string) string {
+	for _, key := range keys {
+		if value, ok := os.LookupEnv(key); ok {
+			if strings.TrimSpace(value) != "" {
+				return value
+			}
+		}
+	}
+	return fallback
+}
+
+func envIntAny(keys []string, fallback int) int {
+	for _, key := range keys {
+		raw, ok := os.LookupEnv(key)
+		if !ok || strings.TrimSpace(raw) == "" {
+			continue
+		}
+		parsed, err := strconv.Atoi(raw)
+		if err == nil {
+			return parsed
+		}
+	}
+	return fallback
 }

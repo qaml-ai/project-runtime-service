@@ -49,6 +49,20 @@ ANY  /p/:capability/*
 
 The current compatibility API still exposes workspace-oriented routes while extraction is in progress.
 
+## Runtime image contract
+
+The service should not depend on a product-specific image. The image contract is:
+
+- workspace bind mount path is configurable
+- exec user, home, and default working directory are configurable
+- host-side file writes can chown to a configurable UID/GID
+- `GET /health` on container port `8080` is recommended but not part of the project API
+
+The basic default image is intentionally small and product-neutral. Product images can add
+agent skills, browser tooling, language runtimes, deployment helpers, or package caches as
+needed. The runtime service should continue to treat those as image choices, not protocol
+features.
+
 ## Fast clones
 
 On Linux hosts, the preferred storage backend is XFS with project quotas and reflinks enabled.
@@ -132,8 +146,10 @@ CONTROL_PLANE_TLS_CLIENT_CA_FILE=/etc/project-runtime/client-ca.crt
 
 ## Data-loss guardrails
 
-Backups are written as local tar.gz archives under `PROJECT_RUNTIME_BACKUP_ROOT`, with retention
-controlled by `PROJECT_RUNTIME_BACKUP_RETENTION`.
+Backups are written as tar.gz archives with retention controlled by
+`PROJECT_RUNTIME_BACKUP_RETENTION`. When S3-compatible object storage config is complete,
+backups are stored in object storage; otherwise local backup storage under
+`PROJECT_RUNTIME_BACKUP_ROOT` is used.
 
 Restore extracts into a temporary directory and only swaps the current project out after the
 archive has been fully read. If extraction fails, the existing project remains in place and the
@@ -146,6 +162,5 @@ clone, and backup creation fail with HTTP 507 below the reserve.
 ## Remaining future work
 
 - provider-specific disk auto-grow
-- external/object-storage backup backends
 - richer capability auth plugins beyond static bearer/header injection
 - product-neutral setup script and systemd unit names

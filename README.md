@@ -75,7 +75,7 @@ Production Linux defaults:
 Each project or sandbox maps to a leaf directory:
 
 - Host: `/srv/sandboxes/<project-or-sandbox-id>`
-- Container bind mount: `/home/claude` in the compatibility runtime
+- Container bind mount: configurable, defaulting to `/home/claude` for compatibility
 
 Recommended host mount options:
 
@@ -89,6 +89,37 @@ XFS with reflinks enables fast copy-on-write clones:
 cp -a --reflink=always /srv/sandboxes/source /srv/sandboxes/target.tmp
 mv /srv/sandboxes/target.tmp /srv/sandboxes/target
 ```
+
+## Runtime image
+
+The service is image-agnostic. Container images only need to satisfy a small runtime
+contract:
+
+- accept a bind-mounted workspace directory
+- have a user that can run shell commands
+- include whatever tools your agent needs
+- optionally expose `GET /health` on port `8080` for faster readiness checks
+
+The preferred generic config keys are:
+
+```text
+PROJECT_RUNTIME_IMAGE=project-runtime-basic:latest
+PROJECT_RUNTIME_CONTAINER_USER=claude
+PROJECT_RUNTIME_CONTAINER_HOME=/home/claude
+PROJECT_RUNTIME_CONTAINER_WORKDIR=/home/claude
+PROJECT_RUNTIME_WORKSPACE_MOUNT=/home/claude
+PROJECT_RUNTIME_FILE_OWNER_UID=1001
+PROJECT_RUNTIME_FILE_OWNER_GID=1001
+```
+
+`SANDBOX_IMAGE`, `CONTAINER_USER`, `CONTAINER_HOME`, `CONTAINER_WORKDIR`,
+`CONTAINER_WORKSPACE_MOUNT`, `CONTAINER_UID`, and `CONTAINER_GID` remain supported as
+compatibility aliases. `PROJECT_RUNTIME_IMAGE` takes precedence over `SANDBOX_IMAGE`.
+
+`Dockerfile.basic` is the boring quickstart image. It includes bash, git, curl, jq,
+ripgrep, archive tools, and a tiny health listener. Product-specific images can layer on
+agent skills, deploy tooling, language runtimes, browsers, or package managers without
+changing the service protocol.
 
 ## Runtime ports
 

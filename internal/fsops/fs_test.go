@@ -23,6 +23,22 @@ func TestResolveHostPathMapsHomePrefix(t *testing.T) {
 	}
 }
 
+func TestResolveHostPathUsesConfiguredWorkspaceMount(t *testing.T) {
+	t.Setenv("PROJECT_RUNTIME_WORKSPACE_MOUNT", "/workspace")
+	root := t.TempDir()
+	mgr := NewManager(root)
+
+	got, err := mgr.ResolveHostPath("sandbox-a", "/workspace/src/main.ts")
+	if err != nil {
+		t.Fatalf("resolve failed: %v", err)
+	}
+
+	want := filepath.Join(root, "sandbox-a", "src", "main.ts")
+	if got != want {
+		t.Fatalf("unexpected host path: got %q want %q", got, want)
+	}
+}
+
 func TestResolveHostPathRejectsTraversal(t *testing.T) {
 	root := t.TempDir()
 	mgr := NewManager(root)

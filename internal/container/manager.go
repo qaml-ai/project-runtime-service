@@ -85,6 +85,10 @@ type Manager struct {
 	containerRuntime           string
 	containerNamePrefix        string
 	containerScope             string
+	containerUser              string
+	containerHome              string
+	containerWorkdir           string
+	workspaceMountPath         string
 	containerHTTPPort          int
 	idleTimeout                time.Duration
 	r2CredentialsRoot          string
@@ -120,12 +124,16 @@ func NewManager(workspaces *workspace.Manager) *Manager {
 		workspaces:                 workspaces,
 		docker:                     docker,
 		workspacesRoot:             workspacesRoot,
-		sandboxImage:               envString("SANDBOX_IMAGE", "chiridion-sandbox:latest"),
+		sandboxImage:               envStringAny([]string{"PROJECT_RUNTIME_IMAGE", "SANDBOX_IMAGE"}, "project-runtime-basic:latest"),
 		containerMemory:            envString("CONTAINER_MEMORY", "16g"),
 		containerCPUShares:         envString("CONTAINER_CPU_SHARES", "2048"),
 		containerRuntime:           containerRuntime,
 		containerNamePrefix:        envString("CONTAINER_NAME_PREFIX", "prs-"),
 		containerScope:             envString("CONTAINER_SCOPE", "project-runtime-service"),
+		containerUser:              envStringAny([]string{"PROJECT_RUNTIME_CONTAINER_USER", "CONTAINER_USER"}, "claude"),
+		containerHome:              envStringAny([]string{"PROJECT_RUNTIME_CONTAINER_HOME", "CONTAINER_HOME"}, "/home/claude"),
+		containerWorkdir:           envStringAny([]string{"PROJECT_RUNTIME_CONTAINER_WORKDIR", "CONTAINER_WORKDIR"}, "/home/claude"),
+		workspaceMountPath:         envStringAny([]string{"PROJECT_RUNTIME_WORKSPACE_MOUNT", "CONTAINER_WORKSPACE_MOUNT"}, "/home/claude"),
 		containerHTTPPort:          8080,
 		idleTimeout:                containerIdleTimeoutFromEnv(),
 		r2CredentialsRoot:          envString("R2_CREDENTIALS_ROOT", defaultR2CredentialsRoot()),
@@ -454,11 +462,11 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 	m.trace("ensure_container_create_begin", map[string]any{"name": name, "workspacePath": wsPath, "image": m.sandboxImage, "runtime": m.containerRuntime, "opts": opts})
 
 	env := []string{
-		"HOME=/home/claude",
-		"USER=claude",
+		"HOME=" + m.containerHome,
+		"USER=" + m.containerUser,
 	}
 	binds := []string{
-		wsPath + ":/home/claude",
+		wsPath + ":" + m.workspaceMountPath,
 	}
 	var capAdd []string
 	var devices []dockercontainer.DeviceMapping
@@ -676,12 +684,12 @@ func (m *Manager) Exec(ctx context.Context, name string, opts EnsureContainerOpt
 
 	workingDir := strings.TrimSpace(req.Cwd)
 	if workingDir == "" {
-		workingDir = "/home/claude"
+		workingDir = m.containerWorkdir
 	}
 
 	execEnv := []string{
-		"HOME=/home/claude",
-		"USER=claude",
+		"HOME=" + m.containerHome,
+		"USER=" + m.containerUser,
 	}
 	for key, value := range req.Env {
 		key = strings.TrimSpace(key)
@@ -692,7 +700,7 @@ func (m *Manager) Exec(ctx context.Context, name string, opts EnsureContainerOpt
 	}
 
 	createResp, err := m.docker.ContainerExecCreate(ctx, dockerName, dockercontainer.ExecOptions{
-		User:         "claude",
+		User:         m.containerUser,
 		AttachStdout: true,
 		AttachStderr: true,
 		WorkingDir:   workingDir,
@@ -1086,6 +1094,17 @@ func (m *Manager) trace(event string, details map[string]any) {
 func envString(key, fallback string) string {
 	if value, ok := os.LookupEnv(key); ok {
 		return value
+	}
+	return fallback
+}
+
+func envStringAny(keys []string, fallback string) string {
+	for _, key := range keys {
+		if value, ok := os.LookupEnv(key); ok {
+			if strings.TrimSpace(value) != "" {
+				return value
+			}
+		}
 	}
 	return fallback
 }
