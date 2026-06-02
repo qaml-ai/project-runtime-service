@@ -175,6 +175,16 @@ Capabilities are configured with `PROJECT_RUNTIME_PROXY_CAPABILITIES_JSON` or
 Containers call the docker-facing proxy listener with `/p/:capability/*`. The host injects
 configured credentials and authoritative `X-Project-Runtime-*` identity headers.
 
+When `WORKER_BASE_URL` and either `PROJECT_RUNTIME_PROXY_SECRET` or `SANDBOX_PROXY_SECRET`
+are set, the service automatically registers `camelai-artifacts`:
+
+```text
+/p/camelai-artifacts/* -> $WORKER_BASE_URL/api/internal/project-runtime/artifacts/*
+```
+
+This is the default camelAI Git/Artifacts path. Project checkouts can use that local proxy
+remote without receiving Cloudflare Artifacts tokens.
+
 ## Backups
 
 Local backups are stored under `PROJECT_RUNTIME_BACKUP_ROOT`, defaulting to
