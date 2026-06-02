@@ -10,10 +10,11 @@ operations, and provides the storage primitives needed for fast project cloning.
 - Persistent per-project host directories under `WORKSPACES_ROOT`
 - Host-side file operations
 - Container exec API
-- XFS project quota support
+- ZFS per-project datasets with refquota support
+- XFS project quota support for directory-mode hosts
 - Project-shaped control API
-- Fast reflink clone API on Linux/XFS
-- Local or S3-compatible tar.gz backups with retention and guarded restore
+- Fast project clone API using ZFS snapshots/clones, or XFS reflinks in directory mode
+- S3-compatible backups with retention and guarded restore
 - Optional S3-compatible project archival to move inactive project files off local disk
 - Optional bearer or mTLS control-plane authentication
 - Generic outbound HTTP proxy capabilities
@@ -69,13 +70,37 @@ Each project maps to a leaf directory:
 - Host: `/srv/project-runtime/<project-id>`
 - Container bind mount: configurable, defaulting to `/workspace`
 
-Recommended host mount options:
+Recommended production storage backend:
+
+- ZFS pool on a growable data disk
+- one child dataset per project
+- `refquota` for per-project size limits
+- ZFS snapshots and clones for fast project cloning
+- `zfs send` streams for backups and cold-storage archives
+
+Minimal ZFS config:
+
+```text
+PROJECT_RUNTIME_STORAGE_DRIVER=zfs
+PROJECT_RUNTIME_ZFS_POOL=projectpool
+PROJECT_RUNTIME_ZFS_DATASET_PREFIX=projects
+PROJECT_RUNTIME_ZFS_REFQUOTA=100g
+```
+
+In ZFS mode, each project maps to:
+
+- Dataset: `<pool>/<prefix>/<project-runtime-name>`
+- Mountpoint: `/srv/project-runtime/<project-runtime-name>`
+- Container bind mount: configurable, defaulting to `/workspace`
+
+Directory mode remains available for simpler hosts. Recommended directory-mode mount
+options:
 
 - XFS on a growable data disk
 - `defaults,noatime,prjquota`
 - `reflink=1` at filesystem creation time
 
-XFS with reflinks enables fast copy-on-write clones:
+XFS with reflinks enables copy-on-write directory clones:
 
 ```bash
 cp -a --reflink=always /srv/project-runtime/source /srv/project-runtime/target.tmp
@@ -204,13 +229,16 @@ injects authoritative project identity headers.
 
 Backups are recovery points stored in S3-compatible object storage. Backup creation is
 enabled only when object storage config is complete. `PROJECT_RUNTIME_BACKUP_ROOT`, which
-defaults to `/srv/project-runtime/.project-runtime/backups` on Linux, is used only for temporary
-archive files during backup and restore. Retention defaults to the last 5 backups per
+defaults to `/srv/project-runtime/.project-runtime/backups` on Linux, is used only for
+temporary files during backup and restore. Retention defaults to the last 5 backups per
 project and can be changed with `PROJECT_RUNTIME_BACKUP_RETENTION`.
 
-Restore extracts the selected archive into a temporary directory first. The current project
-directory is only moved aside after extraction succeeds, so a failed restore cannot replace a
-valid project with an empty or partially extracted filesystem.
+In ZFS mode, backups are compressed `zfs send` streams with `.zfs.gz` names. Restore receives
+the stream into a temporary dataset and only swaps it into the project dataset after receive
+succeeds, so a failed restore cannot replace a valid project with an empty filesystem.
+
+In directory mode, backups remain `.tar.gz` archives. Restore extracts into a temporary
+directory first and only moves the current project aside after extraction succeeds.
 
 ## Project archival
 
@@ -230,8 +258,9 @@ continuing. If an archive restore fails, the project enters `error` and the serv
 not create a fresh empty project.
 
 Archives require complete S3-compatible object storage config. When that config is incomplete,
-cold storage is disabled. Retention defaults to the last 2 archive generations per project
-and can be changed with `PROJECT_RUNTIME_ARCHIVE_RETENTION`.
+cold storage is disabled. In ZFS mode archives use the same compressed `zfs send` format as
+backups; in directory mode they use `.tar.gz`. Retention defaults to the last 2 archive
+generations per project and can be changed with `PROJECT_RUNTIME_ARCHIVE_RETENTION`.
 
 Set `PROJECT_RUNTIME_ARCHIVE_AFTER_SECS` to a positive value to enable the background
 inactivity sweeper. The sweep interval defaults to 300 seconds and can be changed with

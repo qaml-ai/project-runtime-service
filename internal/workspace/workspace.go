@@ -19,11 +19,16 @@ var ErrReflinkCloneUnavailable = errors.New("reflink clone unavailable")
 
 type ManagerConfig struct {
 	WorkspacesRoot     string
+	StorageDriver      string
 	EnableProjectQuota bool
 	DefaultBlockHard   string
 	DefaultInodeHard   string
 	ProjectsFile       string
 	ProjidFile         string
+	ZFSPool            string
+	ZFSDatasetPrefix   string
+	ZFSRefQuota        string
+	ZFSCommand         string
 }
 
 type Mount struct {
@@ -45,10 +50,15 @@ const defaultProjectIDStart = 10000
 func NewManagerFromEnv() *Manager {
 	cfg := ManagerConfig{
 		WorkspacesRoot:   envString("WORKSPACES_ROOT", defaultWorkspaceRoot()),
+		StorageDriver:    envString("PROJECT_RUNTIME_STORAGE_DRIVER", "directory"),
 		DefaultBlockHard: envString("PROJECT_RUNTIME_DEFAULT_BHARD", "100g"),
 		DefaultInodeHard: envString("PROJECT_RUNTIME_DEFAULT_IHARD", "0"),
 		ProjectsFile:     envString("PROJECT_RUNTIME_PROJECTS_FILE", "/etc/projects"),
 		ProjidFile:       envString("PROJECT_RUNTIME_PROJID_FILE", "/etc/projid"),
+		ZFSPool:          envString("PROJECT_RUNTIME_ZFS_POOL", ""),
+		ZFSDatasetPrefix: envString("PROJECT_RUNTIME_ZFS_DATASET_PREFIX", "projects"),
+		ZFSRefQuota:      envString("PROJECT_RUNTIME_ZFS_REFQUOTA", envString("PROJECT_RUNTIME_DEFAULT_BHARD", "100g")),
+		ZFSCommand:       envString("PROJECT_RUNTIME_ZFS_COMMAND", "zfs"),
 	}
 	enableQuotaDefault := runtime.GOOS == "linux"
 	cfg.EnableProjectQuota = envBool("PROJECT_RUNTIME_ENABLE_PROJECT_QUOTA", enableQuotaDefault)
@@ -58,6 +68,10 @@ func NewManagerFromEnv() *Manager {
 func NewManager(cfg ManagerConfig) *Manager {
 	if cfg.WorkspacesRoot == "" {
 		cfg.WorkspacesRoot = defaultWorkspaceRoot()
+	}
+	cfg.StorageDriver = strings.TrimSpace(strings.ToLower(cfg.StorageDriver))
+	if cfg.StorageDriver == "" {
+		cfg.StorageDriver = "directory"
 	}
 	if cfg.DefaultBlockHard == "" {
 		cfg.DefaultBlockHard = "100g"
@@ -70,6 +84,15 @@ func NewManager(cfg ManagerConfig) *Manager {
 	}
 	if cfg.ProjidFile == "" {
 		cfg.ProjidFile = "/etc/projid"
+	}
+	if cfg.ZFSDatasetPrefix == "" {
+		cfg.ZFSDatasetPrefix = "projects"
+	}
+	if cfg.ZFSRefQuota == "" {
+		cfg.ZFSRefQuota = cfg.DefaultBlockHard
+	}
+	if cfg.ZFSCommand == "" {
+		cfg.ZFSCommand = "zfs"
 	}
 	return &Manager{
 		cfg:    cfg,
@@ -107,13 +130,19 @@ func (m *Manager) Ensure(name string) (string, error) {
 	}
 
 	mount := m.mountRecord(name)
-	if err := os.MkdirAll(mount.MergedDir, 0o700); err != nil {
-		return "", err
-	}
-	_ = os.Chown(mount.MergedDir, 1001, 1001)
+	if m.UsesZFS() {
+		if err := m.ensureZFSDataset(name, mount.MergedDir); err != nil {
+			return "", err
+		}
+	} else {
+		if err := os.MkdirAll(mount.MergedDir, 0o700); err != nil {
+			return "", err
+		}
+		_ = os.Chown(mount.MergedDir, 1001, 1001)
 
-	if err := m.ensureProjectQuota(name, mount.MergedDir); err != nil {
-		return "", err
+		if err := m.ensureProjectQuota(name, mount.MergedDir); err != nil {
+			return "", err
+		}
 	}
 
 	m.mu.Lock()
@@ -133,6 +162,9 @@ func (m *Manager) CloneReflink(sourceName, targetName string) error {
 	}
 	if sourceName == targetName {
 		return errors.New("source and target workspace names must differ")
+	}
+	if m.UsesZFS() {
+		return m.CloneZFS(sourceName, targetName)
 	}
 	if runtime.GOOS != "linux" {
 		return fmt.Errorf("%w: linux/XFS host required", ErrReflinkCloneUnavailable)
@@ -198,9 +230,15 @@ func (m *Manager) Delete(name string) error {
 		return errors.New("workspace name required")
 	}
 
-	workspaceDir := filepath.Join(m.cfg.WorkspacesRoot, name)
-	if err := os.RemoveAll(workspaceDir); err != nil {
-		return err
+	if m.UsesZFS() {
+		if err := m.destroyZFSDataset(name); err != nil {
+			return err
+		}
+	} else {
+		workspaceDir := filepath.Join(m.cfg.WorkspacesRoot, name)
+		if err := os.RemoveAll(workspaceDir); err != nil {
+			return err
+		}
 	}
 
 	m.mu.Lock()
@@ -212,6 +250,25 @@ func (m *Manager) Delete(name string) error {
 	}
 
 	return nil
+}
+
+func (m *Manager) UsesZFS() bool {
+	return m.cfg.StorageDriver == "zfs"
+}
+
+func (m *Manager) StorageDriver() string {
+	return m.cfg.StorageDriver
+}
+
+func (m *Manager) ProjectQuotasEnabled() bool {
+	return !m.UsesZFS() && m.cfg.EnableProjectQuota && runtime.GOOS == "linux"
+}
+
+func (m *Manager) BackupExtension() string {
+	if m.UsesZFS() {
+		return ".zfs.gz"
+	}
+	return ".tar.gz"
 }
 
 func (m *Manager) isWorkspaceReady(path string) bool {

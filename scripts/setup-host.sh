@@ -3,8 +3,8 @@
 # Azure VM provisioning script for Project Runtime Service.
 # Storage model:
 #   - Durable Azure Premium SSD v2 attached disk
-#   - XFS mounted at /srv/project-runtime (with prjquota enabled)
-#   - One directory per project under /srv/project-runtime
+#   - ZFS pool mounted at /srv/project-runtime by default
+#   - One ZFS dataset per project under PROJECT_RUNTIME_ZFS_DATASET_PREFIX
 #
 # Usage: sudo bash setup-host.sh
 #
@@ -22,13 +22,22 @@ ensure_line_in_file() {
   fi
 }
 
-echo "=== Project Runtime Service Setup (XFS + Premium SSD v2) ==="
+echo "=== Project Runtime Service Setup (Premium SSD v2) ==="
 
 PROJECT_RUNTIME_ROOT="${PROJECT_RUNTIME_ROOT:-/srv/project-runtime}"
 PROJECT_RUNTIME_DATA_DEVICE="${PROJECT_RUNTIME_DATA_DEVICE:-/dev/disk/azure/data/by-lun/0}"
+PROJECT_RUNTIME_STORAGE_DRIVER="${PROJECT_RUNTIME_STORAGE_DRIVER:-zfs}"
+PROJECT_RUNTIME_ZFS_POOL="${PROJECT_RUNTIME_ZFS_POOL:-projectruntime}"
+PROJECT_RUNTIME_ZFS_DATASET_PREFIX="${PROJECT_RUNTIME_ZFS_DATASET_PREFIX:-projects}"
 DOCKER_DATA_ROOT="${PROJECT_RUNTIME_ROOT}/.docker"
 PROJECT_RUNTIME_DEFAULT_BHARD="${PROJECT_RUNTIME_DEFAULT_BHARD:-100g}"
 PROJECT_RUNTIME_DEFAULT_IHARD="${PROJECT_RUNTIME_DEFAULT_IHARD:-0}"
+PROJECT_RUNTIME_ZFS_REFQUOTA="${PROJECT_RUNTIME_ZFS_REFQUOTA:-$PROJECT_RUNTIME_DEFAULT_BHARD}"
+if [ "$PROJECT_RUNTIME_STORAGE_DRIVER" = "zfs" ]; then
+  PROJECT_RUNTIME_ENABLE_PROJECT_QUOTA="${PROJECT_RUNTIME_ENABLE_PROJECT_QUOTA:-0}"
+else
+  PROJECT_RUNTIME_ENABLE_PROJECT_QUOTA="${PROJECT_RUNTIME_ENABLE_PROJECT_QUOTA:-1}"
+fi
 
 PROJECT_RUNTIME_IMAGE="${PROJECT_RUNTIME_IMAGE:-project-runtime-basic:latest}"
 
@@ -101,6 +110,51 @@ setup_xfs_data_disk() {
     mount "$PROJECT_RUNTIME_ROOT"
     log "  Mounted ${PROJECT_RUNTIME_ROOT}"
   fi
+
+  mkdir -p "${PROJECT_RUNTIME_ROOT}/.project-runtime" "${PROJECT_RUNTIME_ROOT}/.docker"
+  chmod 0755 "$PROJECT_RUNTIME_ROOT"
+  chmod 0700 "${PROJECT_RUNTIME_ROOT}/.project-runtime"
+}
+
+setup_zfs_data_disk() {
+  log "[1/7] Configuring durable data disk as ZFS..."
+
+  local data_device
+  if ! data_device="$(resolve_data_device)"; then
+    log "  ERROR: could not locate data disk. Set PROJECT_RUNTIME_DATA_DEVICE to your Premium SSD v2 device path."
+    exit 1
+  fi
+
+  log "  Using data device: ${data_device}"
+
+  mkdir -p "$PROJECT_RUNTIME_ROOT"
+
+  if zpool list "$PROJECT_RUNTIME_ZFS_POOL" >/dev/null 2>&1; then
+    log "  ZFS pool ${PROJECT_RUNTIME_ZFS_POOL} already imported."
+  elif zpool import "$PROJECT_RUNTIME_ZFS_POOL" >/dev/null 2>&1; then
+    log "  Imported ZFS pool ${PROJECT_RUNTIME_ZFS_POOL}."
+  else
+    local fs_type
+    fs_type="$(blkid -o value -s TYPE "$data_device" 2>/dev/null || true)"
+    if [ "$fs_type" = "zfs_member" ]; then
+      log "  ERROR: ${data_device} is already a ZFS member, but pool ${PROJECT_RUNTIME_ZFS_POOL} could not be imported."
+      log "  Refusing to create a new pool over an existing ZFS disk."
+      exit 1
+    fi
+    if [ -n "$fs_type" ]; then
+      log "  ERROR: expected empty disk on ${data_device}, found ${fs_type}."
+      exit 1
+    fi
+    log "  Creating ZFS pool ${PROJECT_RUNTIME_ZFS_POOL}..."
+    zpool create -f -m "$PROJECT_RUNTIME_ROOT" "$PROJECT_RUNTIME_ZFS_POOL" "$data_device"
+  fi
+
+  zfs set mountpoint="$PROJECT_RUNTIME_ROOT" "$PROJECT_RUNTIME_ZFS_POOL"
+  zfs set compression=lz4 atime=off "$PROJECT_RUNTIME_ZFS_POOL"
+  if ! zfs list -H "${PROJECT_RUNTIME_ZFS_POOL}/${PROJECT_RUNTIME_ZFS_DATASET_PREFIX}" >/dev/null 2>&1; then
+    zfs create -p -o mountpoint=none "${PROJECT_RUNTIME_ZFS_POOL}/${PROJECT_RUNTIME_ZFS_DATASET_PREFIX}"
+  fi
+  zfs mount "$PROJECT_RUNTIME_ZFS_POOL" 2>/dev/null || true
 
   mkdir -p "${PROJECT_RUNTIME_ROOT}/.project-runtime" "${PROJECT_RUNTIME_ROOT}/.docker"
   chmod 0755 "$PROJECT_RUNTIME_ROOT"
@@ -247,9 +301,13 @@ Environment=WORKSPACES_ROOT=${PROJECT_RUNTIME_ROOT}
 Environment=PROJECT_RUNTIME_USAGE_DB_DIR=${PROJECT_RUNTIME_ROOT}/.project-runtime/usage
 Environment=PROJECT_RUNTIME_IMAGE=${PROJECT_RUNTIME_IMAGE}
 Environment=CONTAINER_RUNTIME=runsc
-Environment=PROJECT_RUNTIME_ENABLE_PROJECT_QUOTA=1
+Environment=PROJECT_RUNTIME_STORAGE_DRIVER=${PROJECT_RUNTIME_STORAGE_DRIVER}
+Environment=PROJECT_RUNTIME_ENABLE_PROJECT_QUOTA=${PROJECT_RUNTIME_ENABLE_PROJECT_QUOTA}
 Environment=PROJECT_RUNTIME_DEFAULT_BHARD=${PROJECT_RUNTIME_DEFAULT_BHARD}
 Environment=PROJECT_RUNTIME_DEFAULT_IHARD=${PROJECT_RUNTIME_DEFAULT_IHARD}
+Environment=PROJECT_RUNTIME_ZFS_POOL=${PROJECT_RUNTIME_ZFS_POOL}
+Environment=PROJECT_RUNTIME_ZFS_DATASET_PREFIX=${PROJECT_RUNTIME_ZFS_DATASET_PREFIX}
+Environment=PROJECT_RUNTIME_ZFS_REFQUOTA=${PROJECT_RUNTIME_ZFS_REFQUOTA}
 Environment=DATA_PROXY_PORT=8090
 Environment=DATA_PROXY_UPSTREAM_URL=http://127.0.0.1:8090
 EnvironmentFile=-/etc/project-runtime/service.env
@@ -407,16 +465,32 @@ apply_default_quotas() {
 main() {
   apt-get update -qq
   apt-get install -y -qq xfsprogs curl ca-certificates gnupg lsb-release fuse3 ipset
+  if [ "$PROJECT_RUNTIME_STORAGE_DRIVER" = "zfs" ]; then
+    apt-get install -y -qq zfsutils-linux
+  fi
 
   wait_for_data_device
-  setup_xfs_data_disk
+  case "$PROJECT_RUNTIME_STORAGE_DRIVER" in
+    zfs)
+      setup_zfs_data_disk
+      ;;
+    directory)
+      setup_xfs_data_disk
+      ;;
+    *)
+      log "  ERROR: unsupported PROJECT_RUNTIME_STORAGE_DRIVER=${PROJECT_RUNTIME_STORAGE_DRIVER}"
+      exit 1
+      ;;
+  esac
   install_docker_and_runtime "$DOCKER_DATA_ROOT"
   install_go_and_host_service
   install_firewall_service
 
   install_r2_mount_support
   install_cloudflared_and_acr
-  apply_default_quotas
+  if [ "$PROJECT_RUNTIME_STORAGE_DRIVER" != "zfs" ]; then
+    apply_default_quotas
+  fi
 
   systemctl daemon-reload
   systemctl enable --now project-runtime-data-proxy 2>/dev/null || true
@@ -428,15 +502,25 @@ main() {
   echo "=== Setup complete ==="
   echo ""
   echo "Storage layout:"
-  echo "  ${PROJECT_RUNTIME_ROOT}            - Durable Premium SSD v2 (XFS, prjquota enabled)"
-  echo "  ${PROJECT_RUNTIME_ROOT}/<project>  - Per-project persistent root"
-  echo "  Default per-project quota   - ${PROJECT_RUNTIME_DEFAULT_BHARD} (ihard=${PROJECT_RUNTIME_DEFAULT_IHARD})"
+  if [ "$PROJECT_RUNTIME_STORAGE_DRIVER" = "zfs" ]; then
+    echo "  ${PROJECT_RUNTIME_ROOT}            - Durable Premium SSD v2 (ZFS pool ${PROJECT_RUNTIME_ZFS_POOL})"
+    echo "  ${PROJECT_RUNTIME_ZFS_POOL}/${PROJECT_RUNTIME_ZFS_DATASET_PREFIX}/<project> - Per-project ZFS datasets"
+    echo "  Default per-project refquota - ${PROJECT_RUNTIME_ZFS_REFQUOTA}"
+  else
+    echo "  ${PROJECT_RUNTIME_ROOT}            - Durable Premium SSD v2 (XFS, prjquota enabled)"
+    echo "  ${PROJECT_RUNTIME_ROOT}/<project>  - Per-project persistent root"
+    echo "  Default per-project quota   - ${PROJECT_RUNTIME_DEFAULT_BHARD} (ihard=${PROJECT_RUNTIME_DEFAULT_IHARD})"
+  fi
   echo "  ${PROJECT_RUNTIME_ROOT}/.project-runtime/usage - project runtime usage databases"
   echo "  ${DOCKER_DATA_ROOT}     - Docker data-root"
   echo ""
   echo "To verify:"
   echo "  findmnt ${PROJECT_RUNTIME_ROOT}"
-  echo "  xfs_info ${PROJECT_RUNTIME_ROOT}"
+  if [ "$PROJECT_RUNTIME_STORAGE_DRIVER" = "zfs" ]; then
+    echo "  zpool status ${PROJECT_RUNTIME_ZFS_POOL}"
+  else
+    echo "  xfs_info ${PROJECT_RUNTIME_ROOT}"
+  fi
   echo "  systemctl status project-runtime-data-proxy"
   echo "  systemctl status project-runtime"
 }

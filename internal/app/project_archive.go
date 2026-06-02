@@ -158,11 +158,18 @@ func (s *Server) createArchiveObject(route ProjectRoute) (projectArchiveRef, err
 	if err := os.MkdirAll(s.cfg.BackupRoot, 0o700); err != nil {
 		return projectArchiveRef{}, err
 	}
-	name := time.Now().UTC().Format("20060102T150405.000000000Z") + ".tar.gz"
+	name := time.Now().UTC().Format("20060102T150405.000000000Z") + s.workspaces.BackupExtension()
 	tmpPath := filepath.Join(s.cfg.BackupRoot, route.Name+"-archive-"+name+".tmp")
-	if err := writeTarGz(sourceDir, tmpPath); err != nil {
-		_ = os.Remove(tmpPath)
-		return projectArchiveRef{}, err
+	if s.workspaces.UsesZFS() {
+		if _, err := s.workspaces.WriteZFSBackup(route.Name, tmpPath); err != nil {
+			_ = os.Remove(tmpPath)
+			return projectArchiveRef{}, err
+		}
+	} else {
+		if err := writeTarGz(sourceDir, tmpPath); err != nil {
+			_ = os.Remove(tmpPath)
+			return projectArchiveRef{}, err
+		}
 	}
 	stat, err := os.Stat(tmpPath)
 	if err != nil {
@@ -209,7 +216,7 @@ func (s *Server) restoreArchiveObject(route ProjectRoute, archive projectArchive
 	if err := os.MkdirAll(s.cfg.BackupRoot, 0o700); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(s.cfg.BackupRoot, route.Name+"-unarchive-*.tar.gz")
+	tmp, err := os.CreateTemp(s.cfg.BackupRoot, route.Name+"-unarchive-*")
 	if err != nil {
 		return err
 	}

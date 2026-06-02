@@ -111,11 +111,18 @@ func (s *Server) createBackup(route ProjectRoute) (backupInfo, error) {
 	if err := os.MkdirAll(projectBackupDir, 0o700); err != nil {
 		return backupInfo{}, err
 	}
-	name := time.Now().UTC().Format("20060102T150405.000000000Z") + ".tar.gz"
+	name := time.Now().UTC().Format("20060102T150405.000000000Z") + s.workspaces.BackupExtension()
 	tmpPath := filepath.Join(projectBackupDir, name+".tmp")
-	if err := writeTarGz(sourceDir, tmpPath); err != nil {
-		_ = os.Remove(tmpPath)
-		return backupInfo{}, err
+	if s.workspaces.UsesZFS() {
+		if _, err := s.workspaces.WriteZFSBackup(route.Name, tmpPath); err != nil {
+			_ = os.Remove(tmpPath)
+			return backupInfo{}, err
+		}
+	} else {
+		if err := writeTarGz(sourceDir, tmpPath); err != nil {
+			_ = os.Remove(tmpPath)
+			return backupInfo{}, err
+		}
 	}
 	stat, err := os.Stat(tmpPath)
 	if err != nil {
@@ -158,6 +165,9 @@ func (s *Server) restoreBackup(route ProjectRoute, backup backupInfo) error {
 		return err
 	}
 	defer cleanup()
+	if strings.HasSuffix(backup.Name, ".zfs.gz") {
+		return s.workspaces.RestoreZFSBackup(route.Name, backupPath)
+	}
 
 	root := s.workspaces.Root()
 	targetDir := filepath.Join(root, route.Name)
@@ -172,6 +182,9 @@ func (s *Server) restoreBackup(route ProjectRoute, backup backupInfo) error {
 	}()
 	if err := extractTarGz(backupPath, extractDir); err != nil {
 		return fmt.Errorf("restore extraction failed before replacing current project: %w", err)
+	}
+	if s.workspaces.UsesZFS() {
+		return s.workspaces.ReplaceWithDirectory(route.Name, extractDir)
 	}
 
 	targetExists := false
@@ -206,7 +219,7 @@ func (s *Server) listBackups(route ProjectRoute) ([]backupInfo, error) {
 	}
 	backups := make([]backupInfo, 0, len(objects))
 	for _, object := range objects {
-		if !strings.HasSuffix(object.Key, ".tar.gz") {
+		if !strings.HasSuffix(object.Key, ".tar.gz") && !strings.HasSuffix(object.Key, ".zfs.gz") {
 			continue
 		}
 		backups = append(backups, backupInfo{
@@ -236,7 +249,7 @@ func (s *Server) listLocalBackups(route ProjectRoute) ([]backupInfo, error) {
 	}
 	backups := make([]backupInfo, 0, len(entries))
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".tar.gz") {
+		if entry.IsDir() || (!strings.HasSuffix(entry.Name(), ".tar.gz") && !strings.HasSuffix(entry.Name(), ".zfs.gz")) {
 			continue
 		}
 		stat, err := entry.Info()

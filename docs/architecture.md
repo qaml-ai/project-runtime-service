@@ -63,22 +63,27 @@ features.
 
 ## Fast clones
 
-On Linux hosts, the preferred storage backend is XFS with project quotas and reflinks enabled.
+On Linux hosts, the preferred production storage backend is ZFS.
 
-Fast clone should:
+With `PROJECT_RUNTIME_STORAGE_DRIVER=zfs`, every project is a ZFS dataset mounted at the
+normal project path. Fast clone should:
 
 1. Lock source and target.
-2. Ensure the source project exists.
-3. Reject if the target exists.
+2. Ensure the source project dataset exists.
+3. Reject if the target dataset or target path exists.
 4. Stop the source container briefly.
-5. Run `sync`.
-6. Copy with `cp -a --reflink=always`.
-7. Apply target project quota.
-8. Atomically rename the temporary target directory.
-9. Start the target container lazily on first use.
+5. Snapshot the source dataset.
+6. Run `zfs clone` into the target dataset with the target mountpoint.
+7. Apply the target `refquota`.
+8. Start the target container lazily on first use.
 
-Do not silently fall back to a full copy in the fast clone API. If reflinks are unavailable,
-return a capability error so the caller can choose a slower explicit migration path.
+The clone-origin snapshot is live metadata, because ZFS clones depend on it. It should not be
+deleted as routine backup cleanup.
+
+Directory mode remains available for simple hosts. In that mode, fast clone requires XFS with
+reflinks enabled and copies with `cp -a --reflink=always`. Do not silently fall back to a full
+copy in the fast clone API. If fast cloning is unavailable, return a capability error so the
+caller can choose a slower explicit migration path.
 
 ## Generic outbound capabilities
 
@@ -144,14 +149,16 @@ CONTROL_PLANE_TLS_CLIENT_CA_FILE=/etc/project-runtime/client-ca.crt
 
 ## Data-loss guardrails
 
-Backups are written as tar.gz archives with retention controlled by
-`PROJECT_RUNTIME_BACKUP_RETENTION`. When S3-compatible object storage config is complete,
-backups are stored in object storage; otherwise local backup storage under
-`PROJECT_RUNTIME_BACKUP_ROOT` is used.
+Backups are written to S3-compatible object storage with retention controlled by
+`PROJECT_RUNTIME_BACKUP_RETENTION`.
 
-Restore extracts into a temporary directory and only swaps the current project out after the
-archive has been fully read. If extraction fails, the existing project remains in place and the
-project does not start with an accidentally empty filesystem.
+In ZFS mode, backups are compressed `zfs send` streams. Restore receives into a temporary
+dataset and only renames it into place after the stream has been fully received. If receive
+fails, the existing project remains in place and the project does not start with an
+accidentally empty filesystem.
+
+In directory mode, backups are tar.gz archives. Restore extracts into a temporary directory
+and only swaps the current project out after the archive has been fully read.
 
 The host also enforces a configurable free-space reserve. `PROJECT_RUNTIME_DISK_RESERVE_BYTES`
 defaults to 20 GiB, `/v1/host/stats` reports current headroom, and project creation/mutations,
