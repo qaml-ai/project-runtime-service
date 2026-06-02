@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"errors"
 	"io"
 	"sort"
 	"strings"
@@ -28,17 +27,8 @@ type objectInfo struct {
 }
 
 func newObjectStore(cfg Config) (objectStore, error) {
-	if strings.TrimSpace(cfg.ObjectStoreType) == "" {
+	if !objectStoreConfigured(cfg) {
 		return nil, nil
-	}
-	if strings.TrimSpace(cfg.ObjectStoreType) != "s3" {
-		return nil, errors.New("PROJECT_RUNTIME_OBJECT_STORE must be s3 when set")
-	}
-	if strings.TrimSpace(cfg.ObjectStoreBucket) == "" {
-		return nil, errors.New("PROJECT_RUNTIME_OBJECT_BUCKET is required for object storage")
-	}
-	if strings.TrimSpace(cfg.ObjectStoreAccessKey) == "" || strings.TrimSpace(cfg.ObjectStoreSecretKey) == "" {
-		return nil, errors.New("PROJECT_RUNTIME_OBJECT_ACCESS_KEY_ID and PROJECT_RUNTIME_OBJECT_SECRET_ACCESS_KEY are required")
 	}
 	return &s3ObjectStore{
 		bucket: strings.TrimSpace(cfg.ObjectStoreBucket),
@@ -53,6 +43,13 @@ func newObjectStore(cfg Config) (objectStore, error) {
 			UsePathStyle: cfg.ObjectStorePathStyle,
 		}),
 	}, nil
+}
+
+func objectStoreConfigured(cfg Config) bool {
+	return strings.TrimSpace(cfg.ObjectStoreBucket) != "" &&
+		strings.TrimSpace(cfg.ObjectStoreEndpoint) != "" &&
+		strings.TrimSpace(cfg.ObjectStoreAccessKey) != "" &&
+		strings.TrimSpace(cfg.ObjectStoreSecretKey) != ""
 }
 
 type s3ObjectStore struct {

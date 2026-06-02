@@ -128,7 +128,6 @@ func TestObjectBackupsRoundTripAndPrune(t *testing.T) {
 	server := &Server{
 		cfg: Config{
 			BackupRoot:        filepath.Join(root, "backups"),
-			BackupStore:       "object",
 			BackupRetention:   1,
 			ObjectStorePrefix: "runtime",
 		},
@@ -176,7 +175,6 @@ func TestArchiveRestoreKeepsProjectUnavailableOnDownloadFailure(t *testing.T) {
 		cfg: Config{
 			BackupRoot:        filepath.Join(root, "tmp"),
 			ProjectStateRoot:  stateRoot,
-			ArchiveStore:      "object",
 			ArchiveRetention:  2,
 			ObjectStorePrefix: "runtime",
 		},

@@ -81,7 +81,7 @@ func NewServer(cfg Config, containers *container.Manager, workspaces *workspace.
 }
 
 func (s *Server) startArchiveSweeper() {
-	if s.cfg.ArchiveAfter <= 0 || s.archiveStoreKind() != "object" || s.objectStore == nil {
+	if s.cfg.ArchiveAfter <= 0 || s.objectStore == nil {
 		return
 	}
 	go func() {

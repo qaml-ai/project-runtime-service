@@ -24,12 +24,8 @@ func (s *Server) handleProjectStorageGet(w http.ResponseWriter, _ *http.Request,
 }
 
 func (s *Server) handleProjectArchive(w http.ResponseWriter, _ *http.Request, route ProjectRoute) error {
-	if s.archiveStoreKind() != "object" {
-		errorJSON(w, "project archive store is disabled", http.StatusPreconditionFailed)
-		return nil
-	}
 	if s.objectStore == nil {
-		errorJSON(w, "object storage is not configured", http.StatusPreconditionFailed)
+		errorJSON(w, "object storage is not configured; cold storage is disabled", http.StatusPreconditionFailed)
 		return nil
 	}
 	if s.rejectInsufficientHeadroom(w) {
@@ -328,12 +324,4 @@ func (s *Server) projectArchiveObjectPrefix(route ProjectRoute) string {
 
 func (s *Server) projectArchiveObjectKey(route ProjectRoute, name string) string {
 	return objectKey(s.cfg.ObjectStorePrefix, "archives", route.Name, name)
-}
-
-func (s *Server) archiveStoreKind() string {
-	kind := strings.TrimSpace(strings.ToLower(s.cfg.ArchiveStore))
-	if kind == "" {
-		return "disabled"
-	}
-	return kind
 }

@@ -22,14 +22,11 @@ type Config struct {
 	UsageDBRoot           string
 	ProjectStateRoot      string
 	BackupRoot            string
-	BackupStore           string
 	BackupRetention       int
 	DiskReserveBytes      int64
-	ArchiveStore          string
 	ArchiveRetention      int
 	ArchiveAfter          time.Duration
 	ArchiveSweepInterval  time.Duration
-	ObjectStoreType       string
 	ObjectStoreBucket     string
 	ObjectStorePrefix     string
 	ObjectStoreEndpoint   string
@@ -77,14 +74,11 @@ func LoadConfig() Config {
 		UsageDBRoot:           envString("SANDBOX_HOST_USAGE_DB_DIR", defaultUsageDBRoot()),
 		ProjectStateRoot:      envString("PROJECT_RUNTIME_STATE_ROOT", defaultProjectStateRoot()),
 		BackupRoot:            envString("PROJECT_RUNTIME_BACKUP_ROOT", defaultBackupRoot()),
-		BackupStore:           envString("PROJECT_RUNTIME_BACKUP_STORE", "local"),
 		BackupRetention:       maxInt(1, envInt("PROJECT_RUNTIME_BACKUP_RETENTION", 5)),
 		DiskReserveBytes:      envInt64("PROJECT_RUNTIME_DISK_RESERVE_BYTES", 20*1024*1024*1024),
-		ArchiveStore:          envString("PROJECT_RUNTIME_ARCHIVE_STORE", "object"),
 		ArchiveRetention:      maxInt(1, envInt("PROJECT_RUNTIME_ARCHIVE_RETENTION", 2)),
 		ArchiveAfter:          time.Duration(envInt("PROJECT_RUNTIME_ARCHIVE_AFTER_SECS", 0)) * time.Second,
 		ArchiveSweepInterval:  time.Duration(maxInt(60, envInt("PROJECT_RUNTIME_ARCHIVE_SWEEP_SECS", 300))) * time.Second,
-		ObjectStoreType:       envString("PROJECT_RUNTIME_OBJECT_STORE", ""),
 		ObjectStoreBucket:     envString("PROJECT_RUNTIME_OBJECT_BUCKET", ""),
 		ObjectStorePrefix:     envString("PROJECT_RUNTIME_OBJECT_PREFIX", "project-runtime"),
 		ObjectStoreEndpoint:   envString("PROJECT_RUNTIME_OBJECT_ENDPOINT", ""),

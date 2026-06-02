@@ -36,6 +36,10 @@ func (s *Server) handleProjectBackupsList(w http.ResponseWriter, _ *http.Request
 }
 
 func (s *Server) handleProjectBackupCreate(w http.ResponseWriter, _ *http.Request, route ProjectRoute) error {
+	if s.objectStore == nil {
+		errorJSON(w, "object storage is not configured; backups are disabled", http.StatusPreconditionFailed)
+		return nil
+	}
 	if s.rejectInsufficientHeadroom(w) {
 		return nil
 	}
@@ -118,51 +122,31 @@ func (s *Server) createBackup(route ProjectRoute) (backupInfo, error) {
 		_ = os.Remove(tmpPath)
 		return backupInfo{}, err
 	}
-	if s.backupStoreKind() == "object" {
-		if s.objectStore == nil {
-			_ = os.Remove(tmpPath)
-			return backupInfo{}, errors.New("object backup store is configured but object storage is unavailable")
-		}
-		key := s.projectBackupObjectKey(route, name)
-		file, err := os.Open(tmpPath)
-		if err != nil {
-			_ = os.Remove(tmpPath)
-			return backupInfo{}, err
-		}
-		uploaded, putErr := s.objectStore.Put(contextWithTimeout(), key, file, stat.Size(), "application/gzip")
-		closeErr := file.Close()
+	if s.objectStore == nil {
 		_ = os.Remove(tmpPath)
-		if putErr != nil {
-			return backupInfo{}, putErr
-		}
-		if closeErr != nil {
-			return backupInfo{}, closeErr
-		}
-		return backupInfo{
-			Name:      name,
-			Key:       key,
-			Store:     "object",
-			Size:      uploaded.Size,
-			CreatedAt: uploaded.LastModified.UTC().Format(time.RFC3339Nano),
-			ProjectID: route.ID,
-			Runtime:   route.Name,
-		}, nil
+		return backupInfo{}, errors.New("object storage is not configured; backups are disabled")
 	}
-	path := filepath.Join(projectBackupDir, name)
-	if err := os.Rename(tmpPath, path); err != nil {
-		_ = os.Remove(tmpPath)
-		return backupInfo{}, err
-	}
-	stat, err = os.Stat(path)
+	key := s.projectBackupObjectKey(route, name)
+	file, err := os.Open(tmpPath)
 	if err != nil {
+		_ = os.Remove(tmpPath)
 		return backupInfo{}, err
+	}
+	uploaded, putErr := s.objectStore.Put(contextWithTimeout(), key, file, stat.Size(), "application/gzip")
+	closeErr := file.Close()
+	_ = os.Remove(tmpPath)
+	if putErr != nil {
+		return backupInfo{}, putErr
+	}
+	if closeErr != nil {
+		return backupInfo{}, closeErr
 	}
 	return backupInfo{
 		Name:      name,
-		Path:      path,
-		Store:     "local",
-		Size:      stat.Size(),
-		CreatedAt: stat.ModTime().UTC().Format(time.RFC3339Nano),
+		Key:       key,
+		Store:     "object",
+		Size:      uploaded.Size,
+		CreatedAt: uploaded.LastModified.UTC().Format(time.RFC3339Nano),
 		ProjectID: route.ID,
 		Runtime:   route.Name,
 	}, nil
@@ -213,35 +197,35 @@ func (s *Server) restoreBackup(route ProjectRoute, backup backupInfo) error {
 }
 
 func (s *Server) listBackups(route ProjectRoute) ([]backupInfo, error) {
-	if s.backupStoreKind() == "object" {
-		if s.objectStore == nil {
-			return nil, errors.New("object backup store is configured but object storage is unavailable")
-		}
-		objects, err := s.objectStore.List(contextWithTimeout(), s.projectBackupObjectPrefix(route))
-		if err != nil {
-			return nil, err
-		}
-		backups := make([]backupInfo, 0, len(objects))
-		for _, object := range objects {
-			if !strings.HasSuffix(object.Key, ".tar.gz") {
-				continue
-			}
-			backups = append(backups, backupInfo{
-				Name:      filepath.Base(object.Key),
-				Key:       object.Key,
-				Store:     "object",
-				Size:      object.Size,
-				CreatedAt: object.LastModified.UTC().Format(time.RFC3339Nano),
-				ProjectID: route.ID,
-				Runtime:   route.Name,
-			})
-		}
-		sort.Slice(backups, func(i, j int) bool {
-			return backups[i].CreatedAt > backups[j].CreatedAt
-		})
-		return backups, nil
+	if s.objectStore == nil {
+		return []backupInfo{}, nil
 	}
+	objects, err := s.objectStore.List(contextWithTimeout(), s.projectBackupObjectPrefix(route))
+	if err != nil {
+		return nil, err
+	}
+	backups := make([]backupInfo, 0, len(objects))
+	for _, object := range objects {
+		if !strings.HasSuffix(object.Key, ".tar.gz") {
+			continue
+		}
+		backups = append(backups, backupInfo{
+			Name:      filepath.Base(object.Key),
+			Key:       object.Key,
+			Store:     "object",
+			Size:      object.Size,
+			CreatedAt: object.LastModified.UTC().Format(time.RFC3339Nano),
+			ProjectID: route.ID,
+			Runtime:   route.Name,
+		})
+	}
+	sort.Slice(backups, func(i, j int) bool {
+		return backups[i].CreatedAt > backups[j].CreatedAt
+	})
+	return backups, nil
+}
 
+func (s *Server) listLocalBackups(route ProjectRoute) ([]backupInfo, error) {
 	projectBackupDir := s.projectBackupDir(route)
 	entries, err := os.ReadDir(projectBackupDir)
 	if err != nil {
@@ -275,8 +259,24 @@ func (s *Server) listBackups(route ProjectRoute) ([]backupInfo, error) {
 	return backups, nil
 }
 
-func (s *Server) pruneBackups(route ProjectRoute) error {
+func (s *Server) listBackupsIncludingLocal(route ProjectRoute) ([]backupInfo, error) {
 	backups, err := s.listBackups(route)
+	if err != nil {
+		return nil, err
+	}
+	localBackups, err := s.listLocalBackups(route)
+	if err != nil {
+		return nil, err
+	}
+	backups = append(backups, localBackups...)
+	sort.Slice(backups, func(i, j int) bool {
+		return backups[i].CreatedAt > backups[j].CreatedAt
+	})
+	return backups, nil
+}
+
+func (s *Server) pruneBackups(route ProjectRoute) error {
+	backups, err := s.listBackupsIncludingLocal(route)
 	if err != nil {
 		return err
 	}
@@ -323,14 +323,6 @@ func (s *Server) projectBackupObjectPrefix(route ProjectRoute) string {
 
 func (s *Server) projectBackupObjectKey(route ProjectRoute, name string) string {
 	return objectKey(s.cfg.ObjectStorePrefix, "backups", route.Name, name)
-}
-
-func (s *Server) backupStoreKind() string {
-	kind := strings.TrimSpace(strings.ToLower(s.cfg.BackupStore))
-	if kind == "" {
-		return "local"
-	}
-	return kind
 }
 
 func (s *Server) localBackupPath(backup backupInfo) (string, func(), error) {

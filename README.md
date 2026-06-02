@@ -186,13 +186,11 @@ injects authoritative project identity headers.
 
 ## Backups
 
-Backups are recovery points. By default they are local tar.gz files stored under
-`PROJECT_RUNTIME_BACKUP_ROOT`, which defaults to `/srv/sandboxes/.project-runtime/backups`
-on Linux. Retention defaults to the last 5 backups per project and can be changed with
-`PROJECT_RUNTIME_BACKUP_RETENTION`.
-
-Set `PROJECT_RUNTIME_BACKUP_STORE=object` to store backup archives in S3-compatible object
-storage instead. R2 works with this path.
+Backups are recovery points stored in S3-compatible object storage. Backup creation is
+enabled only when object storage config is complete. `PROJECT_RUNTIME_BACKUP_ROOT`, which
+defaults to `/srv/sandboxes/.project-runtime/backups` on Linux, is used only for temporary
+archive files during backup and restore. Retention defaults to the last 5 backups per
+project and can be changed with `PROJECT_RUNTIME_BACKUP_RETENTION`.
 
 Restore extracts the selected archive into a temporary directory first. The current project
 directory is only moved aside after extraction succeeds, so a failed restore cannot replace a
@@ -215,9 +213,9 @@ storage, verify the upload metadata, and then remove the local project directory
 continuing. If an archive restore fails, the project enters `error` and the service does
 not create a fresh empty project.
 
-Archives require `PROJECT_RUNTIME_ARCHIVE_STORE=object` and object storage config. Retention
-defaults to the last 2 archive generations per project and can be changed with
-`PROJECT_RUNTIME_ARCHIVE_RETENTION`.
+Archives require complete S3-compatible object storage config. When that config is incomplete,
+cold storage is disabled. Retention defaults to the last 2 archive generations per project
+and can be changed with `PROJECT_RUNTIME_ARCHIVE_RETENTION`.
 
 Set `PROJECT_RUNTIME_ARCHIVE_AFTER_SECS` to a positive value to enable the background
 inactivity sweeper. The sweep interval defaults to 300 seconds and can be changed with
@@ -226,7 +224,6 @@ inactivity sweeper. The sweep interval defaults to 300 seconds and can be change
 S3-compatible object storage config:
 
 ```text
-PROJECT_RUNTIME_OBJECT_STORE=s3
 PROJECT_RUNTIME_OBJECT_BUCKET=...
 PROJECT_RUNTIME_OBJECT_PREFIX=project-runtime
 PROJECT_RUNTIME_OBJECT_ENDPOINT=https://<account>.r2.cloudflarestorage.com
