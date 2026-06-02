@@ -60,8 +60,8 @@ type ExecResponse struct {
 }
 
 const (
-	labelOrgID                    = "com.chiridion.org-id"
-	labelWorkspaceID              = "com.chiridion.workspace-id"
+	labelOrgID                    = "com.qaml.project-runtime.org-id"
+	labelWorkspaceID              = "com.qaml.project-runtime.workspace-id"
 	labelRuntimeScope             = "com.qaml.project-runtime.scope"
 	labelRuntimeProjectID         = "com.qaml.project-runtime.project-id"
 	defaultContainerIdleTimeoutMS = 300_000
@@ -79,7 +79,7 @@ type Manager struct {
 	docker     *dockerclient.Client
 
 	workspacesRoot             string
-	sandboxImage               string
+	runtimeImage               string
 	containerMemory            string
 	containerCPUShares         string
 	containerRuntime           string
@@ -124,16 +124,16 @@ func NewManager(workspaces *workspace.Manager) *Manager {
 		workspaces:                 workspaces,
 		docker:                     docker,
 		workspacesRoot:             workspacesRoot,
-		sandboxImage:               envStringAny([]string{"PROJECT_RUNTIME_IMAGE", "SANDBOX_IMAGE"}, "project-runtime-basic:latest"),
+		runtimeImage:               envString("PROJECT_RUNTIME_IMAGE", "project-runtime-basic:latest"),
 		containerMemory:            envString("CONTAINER_MEMORY", "16g"),
 		containerCPUShares:         envString("CONTAINER_CPU_SHARES", "2048"),
 		containerRuntime:           containerRuntime,
 		containerNamePrefix:        envString("CONTAINER_NAME_PREFIX", "prs-"),
 		containerScope:             envString("CONTAINER_SCOPE", "project-runtime-service"),
-		containerUser:              envStringAny([]string{"PROJECT_RUNTIME_CONTAINER_USER", "CONTAINER_USER"}, "claude"),
-		containerHome:              envStringAny([]string{"PROJECT_RUNTIME_CONTAINER_HOME", "CONTAINER_HOME"}, "/home/claude"),
-		containerWorkdir:           envStringAny([]string{"PROJECT_RUNTIME_CONTAINER_WORKDIR", "CONTAINER_WORKDIR"}, "/home/claude"),
-		workspaceMountPath:         envStringAny([]string{"PROJECT_RUNTIME_WORKSPACE_MOUNT", "CONTAINER_WORKSPACE_MOUNT"}, "/home/claude"),
+		containerUser:              envString("PROJECT_RUNTIME_CONTAINER_USER", "runtime"),
+		containerHome:              envString("PROJECT_RUNTIME_CONTAINER_HOME", "/workspace"),
+		containerWorkdir:           envString("PROJECT_RUNTIME_CONTAINER_WORKDIR", "/workspace"),
+		workspaceMountPath:         envString("PROJECT_RUNTIME_WORKSPACE_MOUNT", "/workspace"),
 		containerHTTPPort:          8080,
 		idleTimeout:                containerIdleTimeoutFromEnv(),
 		r2CredentialsRoot:          envString("R2_CREDENTIALS_ROOT", defaultR2CredentialsRoot()),
@@ -143,7 +143,7 @@ func NewManager(workspaces *workspace.Manager) *Manager {
 		r2SecretAccessKey:          envString("R2_SECRET_ACCESS_KEY", ""),
 		r2TempCredentialTTLSeconds: envInt("R2_TEMP_CREDENTIAL_TTL_SECONDS", defaultR2TempCredentialTTLSeconds()),
 		healthPollInterval:         maxDuration(10*time.Millisecond, time.Duration(envInt("HEALTH_POLL_INTERVAL_MS", 50))*time.Millisecond),
-		traceLifecycle:             envString("TRACE_SANDBOX_LIFECYCLE", "") == "1",
+		traceLifecycle:             envString("TRACE_PROJECT_RUNTIME_LIFECYCLE", "") == "1",
 		containers:                 make(map[string]*ContainerRecord),
 		containerIPIndex:           make(map[string]string),
 		pendingWorkspaces:          make(map[string]int),
@@ -378,10 +378,10 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 			if !m.matchesConfiguredImage(inspect) {
 				m.trace("ensure_container_image_mismatch_cached", map[string]any{
 					"name":            name,
-					"configuredImage": m.sandboxImage,
+					"configuredImage": m.runtimeImage,
 					"containerImage":  configuredImageFromInspect(inspect),
 				})
-				log.Printf("[ContainerManager] container %s image mismatch (have=%s want=%s); recreating", name, configuredImageFromInspect(inspect), m.sandboxImage)
+				log.Printf("[ContainerManager] container %s image mismatch (have=%s want=%s); recreating", name, configuredImageFromInspect(inspect), m.runtimeImage)
 				_ = m.removeContainerIfExists(dockerName, true)
 				m.mu.Lock()
 				m.removeContainerRecordLocked(name)
@@ -408,10 +408,10 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 		if !m.matchesConfiguredImage(inspect) {
 			m.trace("ensure_container_image_mismatch_existing", map[string]any{
 				"name":            name,
-				"configuredImage": m.sandboxImage,
+				"configuredImage": m.runtimeImage,
 				"containerImage":  configuredImageFromInspect(inspect),
 			})
-			log.Printf("[ContainerManager] container %s image mismatch (have=%s want=%s); recreating", name, configuredImageFromInspect(inspect), m.sandboxImage)
+			log.Printf("[ContainerManager] container %s image mismatch (have=%s want=%s); recreating", name, configuredImageFromInspect(inspect), m.runtimeImage)
 			_ = m.removeContainerIfExists(dockerName, true)
 		} else {
 			port := hostPortFromInspect(inspect, m.containerHTTPPort)
@@ -459,7 +459,7 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 	wsPath := m.workspacePath(name)
 
 	log.Printf("[ContainerManager] creating container %s", name)
-	m.trace("ensure_container_create_begin", map[string]any{"name": name, "workspacePath": wsPath, "image": m.sandboxImage, "runtime": m.containerRuntime, "opts": opts})
+	m.trace("ensure_container_create_begin", map[string]any{"name": name, "workspacePath": wsPath, "image": m.runtimeImage, "runtime": m.containerRuntime, "opts": opts})
 
 	env := []string{
 		"HOME=" + m.containerHome,
@@ -480,8 +480,8 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 		r2Config = cfg
 		if r2Config != nil {
 			binds = append(binds,
-				r2Config.uploadsCredentialsFile+":/run/chiridion-r2/uploads.credentials:ro",
-				r2Config.outputsCredentialsFile+":/run/chiridion-r2/outputs.credentials:ro",
+				r2Config.uploadsCredentialsFile+":/run/project-runtime-r2/uploads.credentials:ro",
+				r2Config.outputsCredentialsFile+":/run/project-runtime-r2/outputs.credentials:ro",
 			)
 			capAdd = append(capAdd, "SYS_ADMIN")
 			devices = append(devices, dockercontainer.DeviceMapping{
@@ -495,8 +495,8 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 				"R2_ACCOUNT_ID="+m.r2AccountID,
 				"R2_UPLOADS_PREFIX="+r2Config.uploadsPrefix,
 				"R2_OUTPUTS_PREFIX="+r2Config.outputsPrefix,
-				"R2_UPLOADS_CREDENTIALS_FILE=/run/chiridion-r2/uploads.credentials",
-				"R2_OUTPUTS_CREDENTIALS_FILE=/run/chiridion-r2/outputs.credentials",
+				"R2_UPLOADS_CREDENTIALS_FILE=/run/project-runtime-r2/uploads.credentials",
+				"R2_OUTPUTS_CREDENTIALS_FILE=/run/project-runtime-r2/outputs.credentials",
 			)
 			log.Printf("[ContainerManager] in-container R2 mounts configured for %s/%s", opts.OrgID, opts.WorkspaceID)
 		}
@@ -513,7 +513,7 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 
 	containerHTTPPort := nat.Port(strconv.Itoa(m.containerHTTPPort) + "/tcp")
 	createConfig := &dockercontainer.Config{
-		Image: m.sandboxImage,
+		Image: m.runtimeImage,
 		Env:   env,
 		ExposedPorts: nat.PortSet{
 			containerHTTPPort: {},
@@ -636,10 +636,10 @@ func (m *Manager) GetContainer(name string) (*ContainerRecord, error) {
 		if !m.matchesConfiguredImage(inspect) {
 			m.trace("get_container_image_mismatch_existing", map[string]any{
 				"name":            name,
-				"configuredImage": m.sandboxImage,
+				"configuredImage": m.runtimeImage,
 				"containerImage":  configuredImageFromInspect(inspect),
 			})
-			log.Printf("[ContainerManager] container %s image mismatch (have=%s want=%s); recreating", name, configuredImageFromInspect(inspect), m.sandboxImage)
+			log.Printf("[ContainerManager] container %s image mismatch (have=%s want=%s); recreating", name, configuredImageFromInspect(inspect), m.runtimeImage)
 			_ = m.removeContainerIfExists(dockerName, true)
 			return nil, nil
 		}
@@ -1033,7 +1033,7 @@ func configuredImageFromInspect(inspect dockercontainer.InspectResponse) string 
 }
 
 func (m *Manager) matchesConfiguredImage(inspect dockercontainer.InspectResponse) bool {
-	return configuredImageFromInspect(inspect) == strings.TrimSpace(m.sandboxImage)
+	return configuredImageFromInspect(inspect) == strings.TrimSpace(m.runtimeImage)
 }
 
 func hostPortFromInspect(inspect dockercontainer.InspectResponse, containerHTTPPort int) int {
@@ -1098,17 +1098,6 @@ func envString(key, fallback string) string {
 	return fallback
 }
 
-func envStringAny(keys []string, fallback string) string {
-	for _, key := range keys {
-		if value, ok := os.LookupEnv(key); ok {
-			if strings.TrimSpace(value) != "" {
-				return value
-			}
-		}
-	}
-	return fallback
-}
-
 func envInt(key string, fallback int) int {
 	raw := envString(key, "")
 	if strings.TrimSpace(raw) == "" {
@@ -1142,14 +1131,14 @@ func maxDuration(a, b time.Duration) time.Duration {
 func defaultLocalRoot() string {
 	wd, err := os.Getwd()
 	if err != nil || wd == "" {
-		return ".sandbox-host"
+		return ".project-runtime"
 	}
-	return filepath.Join(wd, ".sandbox-host")
+	return filepath.Join(wd, ".project-runtime")
 }
 
 func defaultWorkspaceRoot() string {
 	if runtime.GOOS == "linux" {
-		return "/srv/sandboxes"
+		return "/srv/project-runtime"
 	}
 	return filepath.Join(defaultLocalRoot(), "workspaces")
 }

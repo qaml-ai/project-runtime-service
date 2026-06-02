@@ -47,8 +47,6 @@ GET  /v1/projects/:id/proxies
 ANY  /p/:capability/*
 ```
 
-The current compatibility API still exposes workspace-oriented routes while extraction is in progress.
-
 ## Runtime image contract
 
 The service should not depend on a product-specific image. The image contract is:
@@ -88,11 +86,11 @@ The proxy design follows the same broad pattern as exe.dev integrations:
 
 - create a named capability
 - attach it to a project, project label, or default policy
-- expose it as an internal hostname or local proxy URL inside the sandbox
-- inject credentials outside the sandbox
+- expose it as an internal hostname or local proxy URL inside the container
+- inject credentials outside the container
 - set authoritative caller headers after stripping spoofable input headers
 
-The sandbox should never receive the upstream credential. It receives only the ability to use
+The container should never receive the upstream credential. It receives only the ability to use
 an attached capability.
 
 Capabilities are loaded from `PROJECT_RUNTIME_PROXY_CAPABILITIES_JSON` or

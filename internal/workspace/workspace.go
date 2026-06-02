@@ -45,13 +45,13 @@ const defaultProjectIDStart = 10000
 func NewManagerFromEnv() *Manager {
 	cfg := ManagerConfig{
 		WorkspacesRoot:   envString("WORKSPACES_ROOT", defaultWorkspaceRoot()),
-		DefaultBlockHard: envString("SANDBOX_DEFAULT_BHARD", "100g"),
-		DefaultInodeHard: envString("SANDBOX_DEFAULT_IHARD", "0"),
-		ProjectsFile:     envString("SANDBOX_PROJECTS_FILE", "/etc/projects"),
-		ProjidFile:       envString("SANDBOX_PROJID_FILE", "/etc/projid"),
+		DefaultBlockHard: envString("PROJECT_RUNTIME_DEFAULT_BHARD", "100g"),
+		DefaultInodeHard: envString("PROJECT_RUNTIME_DEFAULT_IHARD", "0"),
+		ProjectsFile:     envString("PROJECT_RUNTIME_PROJECTS_FILE", "/etc/projects"),
+		ProjidFile:       envString("PROJECT_RUNTIME_PROJID_FILE", "/etc/projid"),
 	}
 	enableQuotaDefault := runtime.GOOS == "linux"
-	cfg.EnableProjectQuota = envBool("SANDBOX_ENABLE_PROJECT_QUOTA", enableQuotaDefault)
+	cfg.EnableProjectQuota = envBool("PROJECT_RUNTIME_ENABLE_PROJECT_QUOTA", enableQuotaDefault)
 	return NewManager(cfg)
 }
 
@@ -538,14 +538,14 @@ func envBool(key string, fallback bool) bool {
 func defaultLocalRoot() string {
 	wd, err := os.Getwd()
 	if err != nil || wd == "" {
-		return ".sandbox-host"
+		return ".project-runtime"
 	}
-	return filepath.Join(wd, ".sandbox-host")
+	return filepath.Join(wd, ".project-runtime")
 }
 
 func defaultWorkspaceRoot() string {
 	if runtime.GOOS == "linux" {
-		return "/srv/sandboxes"
+		return "/srv/project-runtime"
 	}
 	return filepath.Join(defaultLocalRoot(), "workspaces")
 }

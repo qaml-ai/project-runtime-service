@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 #
-# Manage XFS project quotas for per-sandbox directories.
+# Manage XFS project quotas for per-project directories.
 #
 # Examples:
-#   sudo ./xfs-project-quota.sh assign sandbox-123
-#   sudo ./xfs-project-quota.sh set sandbox-123 20g 200k
-#   sudo ./xfs-project-quota.sh show sandbox-123
-#   sudo ./xfs-project-quota.sh clear sandbox-123
+#   sudo ./xfs-project-quota.sh assign project-123
+#   sudo ./xfs-project-quota.sh set project-123 20g 200k
+#   sudo ./xfs-project-quota.sh show project-123
+#   sudo ./xfs-project-quota.sh clear project-123
 #
 set -euo pipefail
 
-MOUNT_ROOT="${MOUNT_ROOT:-/srv/sandboxes}"
+MOUNT_ROOT="${MOUNT_ROOT:-/srv/project-runtime}"
 PROJECTS_FILE="${PROJECTS_FILE:-/etc/projects}"
 PROJID_FILE="${PROJID_FILE:-/etc/projid}"
 PROJECT_ID_START="${PROJECT_ID_START:-10000}"
@@ -18,10 +18,10 @@ PROJECT_ID_START="${PROJECT_ID_START:-10000}"
 usage() {
   cat <<'USAGE'
 Usage:
-  xfs-project-quota.sh assign <sandbox_id>
-  xfs-project-quota.sh set <sandbox_id> <bhard> <ihard>
-  xfs-project-quota.sh show <sandbox_id>
-  xfs-project-quota.sh clear <sandbox_id>
+  xfs-project-quota.sh assign <project_id>
+  xfs-project-quota.sh set <project_id> <bhard> <ihard>
+  xfs-project-quota.sh show <project_id>
+  xfs-project-quota.sh clear <project_id>
 
 Notes:
   - mount must include prjquota (for example: defaults,noatime,prjquota).
@@ -45,15 +45,15 @@ require_tools() {
 }
 
 sanitize_project_name() {
-  local sandbox_id="$1"
+  local project_id="$1"
   local cleaned
-  cleaned="$(printf '%s' "$sandbox_id" | tr -cs 'a-zA-Z0-9_-' '_')"
-  echo "sb_${cleaned}"
+  cleaned="$(printf '%s' "$project_id" | tr -cs 'a-zA-Z0-9_-' '_')"
+  echo "pr_${cleaned}"
 }
 
-sandbox_dir() {
-  local sandbox_id="$1"
-  echo "${MOUNT_ROOT}/${sandbox_id}"
+project_dir() {
+  local project_id="$1"
+  echo "${MOUNT_ROOT}/${project_id}"
 }
 
 ensure_files() {
@@ -101,10 +101,10 @@ remove_line_by_prefix() {
 }
 
 assign_project() {
-  local sandbox_id="$1"
+  local project_ref="$1"
   local project_name project_id dir
-  project_name="$(sanitize_project_name "$sandbox_id")"
-  dir="$(sandbox_dir "$sandbox_id")"
+  project_name="$(sanitize_project_name "$project_ref")"
+  dir="$(project_dir "$project_ref")"
 
   mkdir -p "$dir"
   chmod 0700 "$dir"
@@ -122,21 +122,21 @@ assign_project() {
 }
 
 set_limits() {
-  local sandbox_id="$1"
+  local project_ref="$1"
   local bhard="$2"
   local ihard="$3"
   local project_name
-  project_name="$(sanitize_project_name "$sandbox_id")"
+  project_name="$(sanitize_project_name "$project_ref")"
 
-  assign_project "$sandbox_id"
+  assign_project "$project_ref"
   xfs_quota -x -c "limit -p bhard=${bhard} ihard=${ihard} ${project_name}" "$MOUNT_ROOT"
   echo "Applied limits for ${project_name}: bhard=${bhard}, ihard=${ihard}"
 }
 
 show_project() {
-  local sandbox_id="$1"
+  local project_ref="$1"
   local project_name project_id
-  project_name="$(sanitize_project_name "$sandbox_id")"
+  project_name="$(sanitize_project_name "$project_ref")"
   project_id="$(get_project_id "$project_name")"
   if [ -z "$project_id" ]; then
     echo "No mapping found for ${project_name}"
@@ -147,17 +147,17 @@ show_project() {
 }
 
 clear_project() {
-  local sandbox_id="$1"
+  local project_ref="$1"
   local project_name
-  project_name="$(sanitize_project_name "$sandbox_id")"
+  project_name="$(sanitize_project_name "$project_ref")"
 
   # Clear limits first (best effort), then remove mappings.
   xfs_quota -x -c "limit -p bsoft=0 bhard=0 isoft=0 ihard=0 ${project_name}" "$MOUNT_ROOT" || true
 
   remove_line_by_prefix "$PROJID_FILE" "${project_name}:"
-  # Remove any numeric mapping pointing to this sandbox path.
+  # Remove any numeric mapping pointing to this project path.
   local dir
-  dir="$(sandbox_dir "$sandbox_id")"
+  dir="$(project_dir "$project_ref")"
   local tmp
   tmp="$(mktemp)"
   awk -F: -v d="$dir" '$2 != d { print $0 }' "$PROJECTS_FILE" > "$tmp"

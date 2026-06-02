@@ -8,11 +8,11 @@ import (
 	"testing"
 )
 
-func TestResolveHostPathMapsHomePrefix(t *testing.T) {
+func TestResolveHostPathMapsDefaultWorkspacePrefix(t *testing.T) {
 	root := t.TempDir()
 	mgr := NewManager(root)
 
-	got, err := mgr.ResolveHostPath("sandbox-a", "/home/claude/src/main.ts")
+	got, err := mgr.ResolveHostPath("sandbox-a", "/workspace/src/main.ts")
 	if err != nil {
 		t.Fatalf("resolve failed: %v", err)
 	}
@@ -24,11 +24,11 @@ func TestResolveHostPathMapsHomePrefix(t *testing.T) {
 }
 
 func TestResolveHostPathUsesConfiguredWorkspaceMount(t *testing.T) {
-	t.Setenv("PROJECT_RUNTIME_WORKSPACE_MOUNT", "/workspace")
+	t.Setenv("PROJECT_RUNTIME_WORKSPACE_MOUNT", "/project")
 	root := t.TempDir()
 	mgr := NewManager(root)
 
-	got, err := mgr.ResolveHostPath("sandbox-a", "/workspace/src/main.ts")
+	got, err := mgr.ResolveHostPath("sandbox-a", "/project/src/main.ts")
 	if err != nil {
 		t.Fatalf("resolve failed: %v", err)
 	}

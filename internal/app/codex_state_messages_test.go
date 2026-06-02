@@ -66,7 +66,7 @@ func TestReadCodexStateMessagesMapsCopiedRolloutPath(t *testing.T) {
 	)`); err != nil {
 		t.Fatal(err)
 	}
-	remoteRolloutPath := "/srv/sandboxes/chiridion-ws-example/.codex/threads/camel-thread/sessions/2026/04/14/rollout.jsonl"
+	remoteRolloutPath := "/srv/project-runtime/project-runtime-ws-example/.codex/threads/camel-thread/sessions/2026/04/14/rollout.jsonl"
 	if _, err := db.Exec(`INSERT INTO threads (id, rollout_path, created_at, updated_at) VALUES (?, ?, ?, ?)`, "codex-thread", remoteRolloutPath, 1, 2); err != nil {
 		t.Fatal(err)
 	}

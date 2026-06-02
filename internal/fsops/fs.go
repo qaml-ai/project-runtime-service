@@ -52,9 +52,9 @@ func NewManager(workspacesRoot string) *Manager {
 	}
 	return &Manager{
 		workspacesRoot:     workspacesRoot,
-		workspaceMountPath: cleanMountPath(envStringAny([]string{"PROJECT_RUNTIME_WORKSPACE_MOUNT", "CONTAINER_WORKSPACE_MOUNT"}, "/home/claude")),
-		fileOwnerUID:       envIntAny([]string{"PROJECT_RUNTIME_FILE_OWNER_UID", "CONTAINER_UID"}, 1001),
-		fileOwnerGID:       envIntAny([]string{"PROJECT_RUNTIME_FILE_OWNER_GID", "CONTAINER_GID"}, 1001),
+		workspaceMountPath: cleanMountPath(envString("PROJECT_RUNTIME_WORKSPACE_MOUNT", "/workspace")),
+		fileOwnerUID:       envInt("PROJECT_RUNTIME_FILE_OWNER_UID", 1001),
+		fileOwnerGID:       envInt("PROJECT_RUNTIME_FILE_OWNER_GID", 1001),
 	}
 }
 
@@ -302,13 +302,13 @@ func StreamFile(path string, w io.Writer) error {
 
 func defaultWorkspaceRoot() string {
 	if runtime.GOOS == "linux" {
-		return "/srv/sandboxes"
+		return "/srv/project-runtime"
 	}
 	wd, err := os.Getwd()
 	if err != nil || wd == "" {
-		return ".sandbox-host/workspaces"
+		return ".project-runtime/workspaces"
 	}
-	return filepath.Join(wd, ".sandbox-host", "workspaces")
+	return filepath.Join(wd, ".project-runtime", "workspaces")
 }
 
 func cleanMountPath(path string) string {
@@ -319,27 +319,21 @@ func cleanMountPath(path string) string {
 	return cleaned
 }
 
-func envStringAny(keys []string, fallback string) string {
-	for _, key := range keys {
-		if value, ok := os.LookupEnv(key); ok {
-			if strings.TrimSpace(value) != "" {
-				return value
-			}
-		}
+func envString(key, fallback string) string {
+	if value, ok := os.LookupEnv(key); ok && strings.TrimSpace(value) != "" {
+		return value
 	}
 	return fallback
 }
 
-func envIntAny(keys []string, fallback int) int {
-	for _, key := range keys {
-		raw, ok := os.LookupEnv(key)
-		if !ok || strings.TrimSpace(raw) == "" {
-			continue
-		}
-		parsed, err := strconv.Atoi(raw)
-		if err == nil {
-			return parsed
-		}
+func envInt(key string, fallback int) int {
+	raw, ok := os.LookupEnv(key)
+	if !ok || strings.TrimSpace(raw) == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(raw)
+	if err == nil {
+		return parsed
 	}
 	return fallback
 }

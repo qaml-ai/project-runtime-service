@@ -74,11 +74,11 @@ func TestProxyCapabilityParsingAndHeaders(t *testing.T) {
 
 	source := http.Header{}
 	source.Set("X-Project-Runtime-Project", "spoofed")
-	source.Set("X-Chiridion-Workspace-Id", "spoofed")
+	source.Set("X-Project-Runtime-Org", "spoofed")
 	source.Set("X-Keep", "yes")
 	target := http.Header{}
 	copyProxyHeaders(target, source)
-	if target.Get("X-Project-Runtime-Project") != "" || target.Get("X-Chiridion-Workspace-Id") != "" {
+	if target.Get("X-Project-Runtime-Project") != "" || target.Get("X-Project-Runtime-Org") != "" {
 		t.Fatalf("expected spoofable headers to be stripped: %+v", target)
 	}
 	if target.Get("X-Keep") != "yes" {

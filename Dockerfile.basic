@@ -21,10 +21,10 @@ RUN apt-get update -qq && \
       zip >/dev/null 2>&1 && \
     rm -rf /var/lib/apt/lists/*
 
-RUN useradd -m -u 1001 -s /bin/bash claude
+RUN useradd -m -u 1001 -d /workspace -s /bin/bash runtime
 
 COPY sandbox/basic-entrypoint.sh /usr/local/bin/project-runtime-entrypoint
 RUN chmod +x /usr/local/bin/project-runtime-entrypoint
 
-WORKDIR /home/claude
+WORKDIR /workspace
 ENTRYPOINT ["/usr/local/bin/project-runtime-entrypoint"]

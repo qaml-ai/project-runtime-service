@@ -4,10 +4,6 @@ Project Runtime Service is a self-hostable compute and filesystem runtime for co
 It runs project containers, keeps project disks persistent, executes commands, exposes file
 operations, and provides the storage primitives needed for fast project cloning.
 
-This repository started as the Go sandbox host used by camelAI. The first extraction keeps
-the existing behavior intact while moving toward a generic runtime service API that can be
-used by other agent products.
-
 ## What it provides
 
 - Docker + optional gVisor container lifecycle
@@ -23,7 +19,6 @@ used by other agent products.
 - Generic outbound HTTP proxy capabilities
 - R2/S3-style mounted upload/output prefixes
 - SQL data proxy sidecar
-- Compatibility HTTP proxy hooks for app/platform APIs
 - Usage accounting storage
 
 ## Target direction
@@ -62,20 +57,17 @@ DELETE /v1/projects/:id
 ANY  /p/:capability/*
 ```
 
-The compatibility API from the original sandbox host is still present while extraction is
-underway.
-
 ## Storage model
 
 Production Linux defaults:
 
-- `WORKSPACES_ROOT=/srv/sandboxes`
-- `SANDBOX_HOST_USAGE_DB_DIR=/srv/sandboxes/.sandbox-host/usage`
+- `WORKSPACES_ROOT=/srv/project-runtime`
+- `PROJECT_RUNTIME_USAGE_DB_DIR=/srv/project-runtime/.project-runtime/usage`
 
-Each project or sandbox maps to a leaf directory:
+Each project maps to a leaf directory:
 
-- Host: `/srv/sandboxes/<project-or-sandbox-id>`
-- Container bind mount: configurable, defaulting to `/home/claude` for compatibility
+- Host: `/srv/project-runtime/<project-id>`
+- Container bind mount: configurable, defaulting to `/workspace`
 
 Recommended host mount options:
 
@@ -86,8 +78,8 @@ Recommended host mount options:
 XFS with reflinks enables fast copy-on-write clones:
 
 ```bash
-cp -a --reflink=always /srv/sandboxes/source /srv/sandboxes/target.tmp
-mv /srv/sandboxes/target.tmp /srv/sandboxes/target
+cp -a --reflink=always /srv/project-runtime/source /srv/project-runtime/target.tmp
+mv /srv/project-runtime/target.tmp /srv/project-runtime/target
 ```
 
 ## Runtime image
@@ -104,17 +96,13 @@ The preferred generic config keys are:
 
 ```text
 PROJECT_RUNTIME_IMAGE=project-runtime-basic:latest
-PROJECT_RUNTIME_CONTAINER_USER=claude
-PROJECT_RUNTIME_CONTAINER_HOME=/home/claude
-PROJECT_RUNTIME_CONTAINER_WORKDIR=/home/claude
-PROJECT_RUNTIME_WORKSPACE_MOUNT=/home/claude
+PROJECT_RUNTIME_CONTAINER_USER=runtime
+PROJECT_RUNTIME_CONTAINER_HOME=/workspace
+PROJECT_RUNTIME_CONTAINER_WORKDIR=/workspace
+PROJECT_RUNTIME_WORKSPACE_MOUNT=/workspace
 PROJECT_RUNTIME_FILE_OWNER_UID=1001
 PROJECT_RUNTIME_FILE_OWNER_GID=1001
 ```
-
-`SANDBOX_IMAGE`, `CONTAINER_USER`, `CONTAINER_HOME`, `CONTAINER_WORKDIR`,
-`CONTAINER_WORKSPACE_MOUNT`, `CONTAINER_UID`, and `CONTAINER_GID` remain supported as
-compatibility aliases. `PROJECT_RUNTIME_IMAGE` takes precedence over `SANDBOX_IMAGE`.
 
 `Dockerfile.basic` is the boring quickstart image. It includes bash, git, curl, jq,
 ripgrep, archive tools, and a tiny health listener. Product-specific images can layer on
@@ -124,7 +112,7 @@ changing the service protocol.
 ## Runtime ports
 
 - `PORT` defaults to `80` on Linux and `4400` on non-Linux. This is the control/API listener.
-- `SANDBOX_DOCKER_PROXY_PORT` defaults to `8081`. This is the docker-facing app API proxy listener.
+- `PROJECT_RUNTIME_DOCKER_PROXY_PORT` defaults to `8081`. This is the docker-facing app API proxy listener.
 - `DATA_PROXY_PORT` defaults to `8090`. This is the localhost SQL data-proxy sidecar.
 
 ## Control-plane authentication
@@ -157,34 +145,31 @@ Requires Go 1.24+ and Docker.
 
 ```bash
 go test ./...
-go run ./cmd/sandbox-host
+go run ./cmd/project-runtime
 go run ./cmd/data-proxy
 ```
 
 Useful local defaults:
 
 - `CONTAINER_RUNTIME=runc`
-- `WORKSPACES_ROOT=.sandbox-host/workspaces`
-- `SANDBOX_HOST_USAGE_DB_DIR=.sandbox-host/usage`
+- `WORKSPACES_ROOT=.project-runtime/workspaces`
+- `PROJECT_RUNTIME_USAGE_DB_DIR=.project-runtime/usage`
 - `CONTAINER_IDLE_TIMEOUT_MS=300000`
 
 ## Host setup
 
 Provisioning helpers live in `scripts/`:
 
-- `scripts/setup-host.sh` provisions a Linux host for the current compatibility service.
+- `scripts/setup-host.sh` provisions a Linux host.
 - `scripts/xfs-project-quota.sh` inspects or updates XFS project quotas.
-
-The setup script still uses some camelAI/chiridion names from the source service. Those are
-compatibility details and should be renamed as the extracted service API stabilizes.
 
 ## Generic outbound capabilities
 
 The proxy model is inspired by exe.dev integrations: expose named internal network
 capabilities to project containers, attach them by project/tag/policy, and inject credentials
-outside the user-controlled sandbox.
+outside the user-controlled container.
 
-The sandbox should receive a local capability URL, not provider secrets. The runtime service
+The container should receive a local capability URL, not provider secrets. The runtime service
 should strip spoofable identity headers, resolve the caller project from the container/runtime
 identity, inject authoritative headers, and forward the request using a configured auth plugin.
 
@@ -219,7 +204,7 @@ injects authoritative project identity headers.
 
 Backups are recovery points stored in S3-compatible object storage. Backup creation is
 enabled only when object storage config is complete. `PROJECT_RUNTIME_BACKUP_ROOT`, which
-defaults to `/srv/sandboxes/.project-runtime/backups` on Linux, is used only for temporary
+defaults to `/srv/project-runtime/.project-runtime/backups` on Linux, is used only for temporary
 archive files during backup and restore. Retention defaults to the last 5 backups per
 project and can be changed with `PROJECT_RUNTIME_BACKUP_RETENTION`.
 

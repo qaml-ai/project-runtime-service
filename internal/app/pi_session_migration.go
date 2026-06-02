@@ -23,7 +23,7 @@ func (s *Server) migrateLegacyThreadToHostPiSession(containerName, threadID, ses
 	threadID = strings.TrimSpace(threadID)
 	sessionDir = strings.TrimSpace(sessionDir)
 	if threadID == "" || sessionDir == "" {
-		log.Printf("[SandboxHost] host Pi legacy migration skipped thread=%s reason=missing_thread_or_session_dir sessionDir=%s", threadID, sessionDir)
+		log.Printf("[ProjectRuntime] host Pi legacy migration skipped thread=%s reason=missing_thread_or_session_dir sessionDir=%s", threadID, sessionDir)
 		return 0, nil
 	}
 	if strings.ContainsAny(threadID, `/\`) {
@@ -35,7 +35,7 @@ func (s *Server) migrateLegacyThreadToHostPiSession(containerName, threadID, ses
 		return 0, err
 	}
 	if hasPiSession {
-		log.Printf("[SandboxHost] host Pi legacy migration skipped thread=%s reason=pi_session_exists sessionDir=%s", threadID, sessionDir)
+		log.Printf("[ProjectRuntime] host Pi legacy migration skipped thread=%s reason=pi_session_exists sessionDir=%s", threadID, sessionDir)
 		return 0, nil
 	}
 
@@ -44,7 +44,7 @@ func (s *Server) migrateLegacyThreadToHostPiSession(containerName, threadID, ses
 		return 0, err
 	}
 	if len(messages) == 0 {
-		log.Printf("[SandboxHost] host Pi legacy migration found no legacy messages thread=%s container=%s", threadID, containerName)
+		log.Printf("[ProjectRuntime] host Pi legacy migration found no legacy messages thread=%s container=%s", threadID, containerName)
 		return 0, nil
 	}
 
@@ -53,7 +53,7 @@ func (s *Server) migrateLegacyThreadToHostPiSession(containerName, threadID, ses
 	}
 	content, err := buildHostPiMigrationJSONL(threadID, workspacePath, source, messages)
 	if err != nil {
-		log.Printf("[SandboxHost] host Pi legacy migration build failed thread=%s source=%s messages=%d: %v", threadID, source, len(messages), err)
+		log.Printf("[ProjectRuntime] host Pi legacy migration build failed thread=%s source=%s messages=%d: %v", threadID, source, len(messages), err)
 		return 0, err
 	}
 	filename := hostPiMigrationFilename(messages)
@@ -61,7 +61,7 @@ func (s *Server) migrateLegacyThreadToHostPiSession(containerName, threadID, ses
 	if err := os.WriteFile(target, []byte(content), 0o600); err != nil {
 		return 0, err
 	}
-	log.Printf("[SandboxHost] migrated legacy chat history to host Pi thread=%s source=%s messages=%d file=%s", threadID, source, len(messages), target)
+	log.Printf("[ProjectRuntime] migrated legacy chat history to host Pi thread=%s source=%s messages=%d file=%s", threadID, source, len(messages), target)
 	return len(messages), nil
 }
 
@@ -87,33 +87,33 @@ func (s *Server) readLegacyMessagesForHostPiMigration(containerName, threadID st
 		return nil, "", err
 	}
 
-	log.Printf("[SandboxHost] host Pi legacy migration scanning Claude history thread=%s container=%s candidateSessions=%d", threadID, containerName, len(sessionIDs))
+	log.Printf("[ProjectRuntime] host Pi legacy migration scanning Claude history thread=%s container=%s candidateSessions=%d", threadID, containerName, len(sessionIDs))
 	for _, sessionID := range sessionIDs {
 		jsonlPath := fmt.Sprintf("/home/claude/.claude/projects/-home-claude/%s.jsonl", sessionID)
 		info, err := s.fs.ReadInfo(containerName, jsonlPath)
 		if err != nil {
 			if isNotFoundError(err) {
-				log.Printf("[SandboxHost] host Pi legacy migration Claude candidate missing thread=%s session=%s path=%s", threadID, sessionID, jsonlPath)
+				log.Printf("[ProjectRuntime] host Pi legacy migration Claude candidate missing thread=%s session=%s path=%s", threadID, sessionID, jsonlPath)
 				continue
 			}
-			log.Printf("[SandboxHost] host Pi legacy migration Claude candidate stat failed thread=%s session=%s path=%s: %v", threadID, sessionID, jsonlPath, err)
+			log.Printf("[ProjectRuntime] host Pi legacy migration Claude candidate stat failed thread=%s session=%s path=%s: %v", threadID, sessionID, jsonlPath, err)
 			return nil, "", err
 		}
 		content, err := os.ReadFile(info.HostPath)
 		if err != nil {
 			if os.IsNotExist(err) {
-				log.Printf("[SandboxHost] host Pi legacy migration Claude candidate host file missing thread=%s session=%s containerPath=%s hostPath=%s", threadID, sessionID, jsonlPath, info.HostPath)
+				log.Printf("[ProjectRuntime] host Pi legacy migration Claude candidate host file missing thread=%s session=%s containerPath=%s hostPath=%s", threadID, sessionID, jsonlPath, info.HostPath)
 				continue
 			}
-			log.Printf("[SandboxHost] host Pi legacy migration Claude candidate read failed thread=%s session=%s containerPath=%s hostPath=%s: %v", threadID, sessionID, jsonlPath, info.HostPath, err)
+			log.Printf("[ProjectRuntime] host Pi legacy migration Claude candidate read failed thread=%s session=%s containerPath=%s hostPath=%s: %v", threadID, sessionID, jsonlPath, info.HostPath, err)
 			return nil, "", err
 		}
 		messages := parseClaudeJSONLMessages(string(content), threadID)
 		if len(messages) > 0 {
-			log.Printf("[SandboxHost] host Pi legacy migration selected Claude history thread=%s session=%s path=%s bytes=%d messages=%d", threadID, sessionID, jsonlPath, len(content), len(messages))
+			log.Printf("[ProjectRuntime] host Pi legacy migration selected Claude history thread=%s session=%s path=%s bytes=%d messages=%d", threadID, sessionID, jsonlPath, len(content), len(messages))
 			return messages, "claude", nil
 		}
-		log.Printf("[SandboxHost] host Pi legacy migration Claude candidate parsed empty thread=%s session=%s path=%s bytes=%d", threadID, sessionID, jsonlPath, len(content))
+		log.Printf("[ProjectRuntime] host Pi legacy migration Claude candidate parsed empty thread=%s session=%s path=%s bytes=%d", threadID, sessionID, jsonlPath, len(content))
 	}
 
 	codexSessionID := strings.TrimSpace(sessionEnv["CHIRIDION_CODEX_SESSION_ID"])
@@ -121,15 +121,15 @@ func (s *Server) readLegacyMessagesForHostPiMigration(containerName, threadID st
 	if err != nil {
 		return nil, "", err
 	}
-	log.Printf("[SandboxHost] host Pi legacy migration scanning Codex history thread=%s container=%s codexSession=%s candidatePaths=%d", threadID, containerName, codexSessionID, len(codexThreadPaths))
+	log.Printf("[ProjectRuntime] host Pi legacy migration scanning Codex history thread=%s container=%s codexSession=%s candidatePaths=%d", threadID, containerName, codexSessionID, len(codexThreadPaths))
 	for _, codexThreadPath := range codexThreadPaths {
 		info, err := s.fs.ReadInfo(containerName, codexThreadPath)
 		if err != nil {
 			if isNotFoundError(err) {
-				log.Printf("[SandboxHost] host Pi legacy migration Codex candidate missing thread=%s path=%s", threadID, codexThreadPath)
+				log.Printf("[ProjectRuntime] host Pi legacy migration Codex candidate missing thread=%s path=%s", threadID, codexThreadPath)
 				continue
 			}
-			log.Printf("[SandboxHost] host Pi legacy migration Codex candidate stat failed thread=%s path=%s: %v", threadID, codexThreadPath, err)
+			log.Printf("[ProjectRuntime] host Pi legacy migration Codex candidate stat failed thread=%s path=%s: %v", threadID, codexThreadPath, err)
 			return nil, "", err
 		}
 		messages, err := readCodexStateMessages(
@@ -139,14 +139,14 @@ func (s *Server) readLegacyMessagesForHostPiMigration(containerName, threadID st
 			codexSessionID,
 		)
 		if err != nil {
-			log.Printf("[SandboxHost] host Pi legacy migration Codex candidate read failed thread=%s path=%s hostPath=%s codexSession=%s: %v", threadID, codexThreadPath, info.HostPath, codexSessionID, err)
+			log.Printf("[ProjectRuntime] host Pi legacy migration Codex candidate read failed thread=%s path=%s hostPath=%s codexSession=%s: %v", threadID, codexThreadPath, info.HostPath, codexSessionID, err)
 			return nil, "", err
 		}
 		if len(messages) > 0 {
-			log.Printf("[SandboxHost] host Pi legacy migration selected Codex history thread=%s path=%s hostPath=%s codexSession=%s messages=%d", threadID, codexThreadPath, info.HostPath, codexSessionID, len(messages))
+			log.Printf("[ProjectRuntime] host Pi legacy migration selected Codex history thread=%s path=%s hostPath=%s codexSession=%s messages=%d", threadID, codexThreadPath, info.HostPath, codexSessionID, len(messages))
 			return messages, "codex", nil
 		}
-		log.Printf("[SandboxHost] host Pi legacy migration Codex candidate parsed empty thread=%s path=%s hostPath=%s codexSession=%s", threadID, codexThreadPath, info.HostPath, codexSessionID)
+		log.Printf("[ProjectRuntime] host Pi legacy migration Codex candidate parsed empty thread=%s path=%s hostPath=%s codexSession=%s", threadID, codexThreadPath, info.HostPath, codexSessionID)
 	}
 
 	return nil, "", nil
@@ -752,8 +752,8 @@ func piMigrationAssistantMessage(content []any, createdAt int64) map[string]any 
 	return map[string]any{
 		"role":       "assistant",
 		"content":    content,
-		"api":        "chiridion-legacy-migration",
-		"provider":   "chiridion",
+		"api":        "project-runtime-legacy-migration",
+		"provider":   "project-runtime",
 		"model":      "legacy-migrated-session",
 		"usage":      piMigrationZeroUsage(),
 		"stopReason": stopReason,

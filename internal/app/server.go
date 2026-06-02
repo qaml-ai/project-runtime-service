@@ -113,7 +113,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	})
 
 	if req.URL.Path == "/health" {
-		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "service": "sandbox-host"})
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "service": "project-runtime-service"})
 		return
 	}
 
@@ -132,7 +132,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	if strings.HasPrefix(req.URL.Path, "/v1/projects/") {
 		if err := s.handleProjectRoute(w, req); err != nil {
-			log.Printf("[SandboxHost] project request error: %v", err)
+			log.Printf("[ProjectRuntime] project request error: %v", err)
 			errorJSON(w, fmt.Sprintf("Internal error: %v", err), http.StatusInternalServerError)
 		}
 		return
@@ -166,7 +166,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	s.containers.TouchContainer(route.Name, fmt.Sprintf("workspace_request:%s:%s", req.Method, route.Subpath))
 
 	if err := s.handleWorkspaceRoute(w, req, route); err != nil {
-		log.Printf("[SandboxHost] request error: %v", err)
+		log.Printf("[ProjectRuntime] request error: %v", err)
 		s.trace("request_error", map[string]any{
 			"method":   req.Method,
 			"pathname": req.URL.Path,
@@ -181,7 +181,7 @@ func (s *Server) serveDockerProxy(w http.ResponseWriter, req *http.Request) {
 	sourceIP := requestSourceIP(req)
 	if strings.HasPrefix(req.URL.Path, "/p/") {
 		if err := s.forwardGenericProxyRequest(w, req, sourceIP); err != nil {
-			log.Printf("[SandboxHost] generic proxy request error: %v", err)
+			log.Printf("[ProjectRuntime] generic proxy request error: %v", err)
 			errorJSON(w, fmt.Sprintf("Internal error: %v", err), http.StatusInternalServerError)
 		}
 		return
@@ -199,7 +199,7 @@ func (s *Server) serveDockerProxy(w http.ResponseWriter, req *http.Request) {
 
 	s.containers.TouchContainer(route.Name, fmt.Sprintf("workspace_cf_api_proxy:%s:%s", req.Method, route.Subpath))
 	if err := s.forwardCloudflareAPIProxyRequest(w, req, route); err != nil {
-		log.Printf("[SandboxHost] docker proxy request error: %v", err)
+		log.Printf("[ProjectRuntime] docker proxy request error: %v", err)
 		errorJSON(w, fmt.Sprintf("Internal error: %v", err), http.StatusInternalServerError)
 	}
 }
@@ -239,7 +239,7 @@ func (s *Server) rejectControlRouteFromSandboxCaller(
 		"callerWorkspace": caller.WorkspaceID,
 		"targetWorkspace": route.WorkspaceID,
 	})
-	errorJSON(w, "Sandbox containers cannot access sandbox-host control APIs", http.StatusForbidden)
+	errorJSON(w, "Project containers cannot access project runtime control APIs", http.StatusForbidden)
 	return true
 }
 
@@ -269,7 +269,7 @@ func (s *Server) rejectCloudflareAPIProxyCaller(
 		return true
 	}
 	if caller == nil {
-		errorJSON(w, "Cloudflare API proxy is only available from the workspace sandbox", http.StatusForbidden)
+		errorJSON(w, "Cloudflare API proxy is only available from the project container", http.StatusForbidden)
 		return true
 	}
 
@@ -388,16 +388,16 @@ func (s *Server) handleChatMessages(w http.ResponseWriter, req *http.Request, na
 	}()
 
 	if messages, err := readHostPiSessionMessages(s.cfg.HostPiSessionRoot, threadID); err != nil {
-		log.Printf("[SandboxHost] host Pi message history unavailable thread=%s sessionRoot=%s: %v", threadID, s.cfg.HostPiSessionRoot, err)
+		log.Printf("[ProjectRuntime] host Pi message history unavailable thread=%s sessionRoot=%s: %v", threadID, s.cfg.HostPiSessionRoot, err)
 	} else if len(messages) > 0 {
-		log.Printf("[SandboxHost] chat messages loaded from host Pi thread=%s messages=%d", threadID, len(messages))
+		log.Printf("[ProjectRuntime] chat messages loaded from host Pi thread=%s messages=%d", threadID, len(messages))
 		writeJSON(w, http.StatusOK, map[string]any{
 			"success":  true,
 			"messages": messages,
 		})
 		return nil
 	} else {
-		log.Printf("[SandboxHost] host Pi message history empty thread=%s sessionRoot=%s; checking legacy history", threadID, s.cfg.HostPiSessionRoot)
+		log.Printf("[ProjectRuntime] host Pi message history empty thread=%s sessionRoot=%s; checking legacy history", threadID, s.cfg.HostPiSessionRoot)
 	}
 
 	sessionIDs, err := legacyClaudeSessionCandidates(threadID, claudeSessionID)
@@ -405,43 +405,43 @@ func (s *Server) handleChatMessages(w http.ResponseWriter, req *http.Request, na
 		errorJSON(w, err.Error(), http.StatusBadRequest)
 		return nil
 	}
-	log.Printf("[SandboxHost] chat messages scanning Claude legacy history thread=%s container=%s claudeSession=%s candidateSessions=%d", threadID, name, claudeSessionID, len(sessionIDs))
+	log.Printf("[ProjectRuntime] chat messages scanning Claude legacy history thread=%s container=%s claudeSession=%s candidateSessions=%d", threadID, name, claudeSessionID, len(sessionIDs))
 	for _, sessionID := range sessionIDs {
 		jsonlPath := fmt.Sprintf("/home/claude/.claude/projects/-home-claude/%s.jsonl", sessionID)
 		info, err := s.fs.ReadInfo(name, jsonlPath)
 		if err != nil {
 			lower := strings.ToLower(err.Error())
 			if strings.Contains(lower, "no such file") || strings.Contains(lower, "not exist") {
-				log.Printf("[SandboxHost] chat messages Claude candidate missing thread=%s session=%s path=%s", threadID, sessionID, jsonlPath)
+				log.Printf("[ProjectRuntime] chat messages Claude candidate missing thread=%s session=%s path=%s", threadID, sessionID, jsonlPath)
 				continue
 			}
-			log.Printf("[SandboxHost] chat messages Claude candidate stat failed thread=%s session=%s path=%s: %v", threadID, sessionID, jsonlPath, err)
+			log.Printf("[ProjectRuntime] chat messages Claude candidate stat failed thread=%s session=%s path=%s: %v", threadID, sessionID, jsonlPath, err)
 			return s.handleFSError(w, err, "Chat messages unavailable")
 		}
 
 		file, err := os.Open(info.HostPath)
 		if err != nil {
 			if os.IsNotExist(err) {
-				log.Printf("[SandboxHost] chat messages Claude candidate host file missing thread=%s session=%s containerPath=%s hostPath=%s", threadID, sessionID, jsonlPath, info.HostPath)
+				log.Printf("[ProjectRuntime] chat messages Claude candidate host file missing thread=%s session=%s containerPath=%s hostPath=%s", threadID, sessionID, jsonlPath, info.HostPath)
 				continue
 			}
-			log.Printf("[SandboxHost] chat messages Claude candidate open failed thread=%s session=%s containerPath=%s hostPath=%s: %v", threadID, sessionID, jsonlPath, info.HostPath, err)
+			log.Printf("[ProjectRuntime] chat messages Claude candidate open failed thread=%s session=%s containerPath=%s hostPath=%s: %v", threadID, sessionID, jsonlPath, info.HostPath, err)
 			return err
 		}
 		defer file.Close()
 
 		content, err := io.ReadAll(file)
 		if err != nil {
-			log.Printf("[SandboxHost] chat messages Claude candidate read failed thread=%s session=%s containerPath=%s hostPath=%s: %v", threadID, sessionID, jsonlPath, info.HostPath, err)
+			log.Printf("[ProjectRuntime] chat messages Claude candidate read failed thread=%s session=%s containerPath=%s hostPath=%s: %v", threadID, sessionID, jsonlPath, info.HostPath, err)
 			return err
 		}
 		messages := parseClaudeJSONLMessages(string(content), threadID)
 		if len(messages) == 0 {
-			log.Printf("[SandboxHost] chat messages Claude candidate parsed empty thread=%s session=%s path=%s bytes=%d", threadID, sessionID, jsonlPath, len(content))
+			log.Printf("[ProjectRuntime] chat messages Claude candidate parsed empty thread=%s session=%s path=%s bytes=%d", threadID, sessionID, jsonlPath, len(content))
 			continue
 		}
 
-		log.Printf("[SandboxHost] chat messages loaded from Claude legacy thread=%s session=%s path=%s bytes=%d messages=%d", threadID, sessionID, jsonlPath, len(content), len(messages))
+		log.Printf("[ProjectRuntime] chat messages loaded from Claude legacy thread=%s session=%s path=%s bytes=%d messages=%d", threadID, sessionID, jsonlPath, len(content), len(messages))
 		writeJSON(w, http.StatusOK, map[string]any{
 			"success":  true,
 			"messages": messages,
@@ -454,33 +454,33 @@ func (s *Server) handleChatMessages(w http.ResponseWriter, req *http.Request, na
 		errorJSON(w, err.Error(), http.StatusBadRequest)
 		return nil
 	}
-	log.Printf("[SandboxHost] chat messages scanning Codex legacy history thread=%s container=%s codexSession=%s candidatePaths=%d", threadID, name, codexSessionID, len(codexThreadPaths))
+	log.Printf("[ProjectRuntime] chat messages scanning Codex legacy history thread=%s container=%s codexSession=%s candidatePaths=%d", threadID, name, codexSessionID, len(codexThreadPaths))
 	for _, codexThreadPath := range codexThreadPaths {
 		info, err := s.fs.ReadInfo(name, codexThreadPath)
 		if err != nil {
 			lower := strings.ToLower(err.Error())
 			if strings.Contains(lower, "no such file") || strings.Contains(lower, "not exist") {
-				log.Printf("[SandboxHost] chat messages Codex candidate missing thread=%s path=%s", threadID, codexThreadPath)
+				log.Printf("[ProjectRuntime] chat messages Codex candidate missing thread=%s path=%s", threadID, codexThreadPath)
 				continue
 			}
-			log.Printf("[SandboxHost] chat messages Codex candidate stat failed thread=%s path=%s: %v", threadID, codexThreadPath, err)
+			log.Printf("[ProjectRuntime] chat messages Codex candidate stat failed thread=%s path=%s: %v", threadID, codexThreadPath, err)
 			return s.handleFSError(w, err, "Chat messages unavailable")
 		}
 		if messages, err := readCodexStateMessages(req.Context(), info.HostPath, threadID, codexSessionID); err != nil {
-			log.Printf("[SandboxHost] chat messages Codex candidate read failed thread=%s path=%s hostPath=%s codexSession=%s: %v", threadID, codexThreadPath, info.HostPath, codexSessionID, err)
+			log.Printf("[ProjectRuntime] chat messages Codex candidate read failed thread=%s path=%s hostPath=%s codexSession=%s: %v", threadID, codexThreadPath, info.HostPath, codexSessionID, err)
 		} else if len(messages) > 0 {
-			log.Printf("[SandboxHost] chat messages loaded from Codex legacy thread=%s path=%s hostPath=%s codexSession=%s messages=%d", threadID, codexThreadPath, info.HostPath, codexSessionID, len(messages))
+			log.Printf("[ProjectRuntime] chat messages loaded from Codex legacy thread=%s path=%s hostPath=%s codexSession=%s messages=%d", threadID, codexThreadPath, info.HostPath, codexSessionID, len(messages))
 			writeJSON(w, http.StatusOK, map[string]any{
 				"success":  true,
 				"messages": messages,
 			})
 			return nil
 		} else {
-			log.Printf("[SandboxHost] chat messages Codex candidate parsed empty thread=%s path=%s hostPath=%s codexSession=%s", threadID, codexThreadPath, info.HostPath, codexSessionID)
+			log.Printf("[ProjectRuntime] chat messages Codex candidate parsed empty thread=%s path=%s hostPath=%s codexSession=%s", threadID, codexThreadPath, info.HostPath, codexSessionID)
 		}
 	}
 
-	log.Printf("[SandboxHost] chat messages found no history thread=%s container=%s claudeSession=%s codexSession=%s", threadID, name, claudeSessionID, codexSessionID)
+	log.Printf("[ProjectRuntime] chat messages found no history thread=%s container=%s claudeSession=%s codexSession=%s", threadID, name, claudeSessionID, codexSessionID)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"success":  true,
 		"messages": []parsedChatMessage{},
@@ -494,7 +494,7 @@ func (s *Server) forwardCloudflareAPIProxyRequest(w http.ResponseWriter, req *ht
 		errorJSON(w, "Cloudflare API proxy upstream not configured", http.StatusServiceUnavailable)
 		return nil
 	}
-	secret := strings.TrimSpace(s.cfg.SandboxProxySecret)
+	secret := strings.TrimSpace(s.cfg.ProjectRuntimeProxySecret)
 	if secret == "" {
 		errorJSON(w, "Cloudflare API proxy auth not configured", http.StatusServiceUnavailable)
 		return nil
@@ -833,14 +833,14 @@ func isCloudflareAPIProxyRoute(subpath string) bool {
 func sandboxName(workspaceID string) string {
 	replacer := regexp.MustCompile(`[^a-zA-Z0-9_-]`)
 	safeID := replacer.ReplaceAllString(workspaceID, "_")
-	raw := "chiridion-ws-" + safeID
+	raw := "project-runtime-ws-" + safeID
 
 	normalized := strings.ToLower(raw)
 	normalized = regexp.MustCompile(`[^a-z0-9-]`).ReplaceAllString(normalized, "-")
 	normalized = regexp.MustCompile(`-+`).ReplaceAllString(normalized, "-")
 	normalized = strings.Trim(normalized, "-")
 	if normalized == "" {
-		normalized = fmt.Sprintf("chiridion-%d", time.Now().UnixMilli())
+		normalized = fmt.Sprintf("project-runtime-%d", time.Now().UnixMilli())
 	}
 	if len(normalized) > 63 {
 		normalized = normalized[:63]
@@ -935,8 +935,8 @@ func errorJSON(w http.ResponseWriter, message string, status int) {
 }
 
 func (s *Server) trace(event string, details map[string]any) {
-	if !s.cfg.TraceSandboxHost {
+	if !s.cfg.TraceProjectRuntime {
 		return
 	}
-	log.Printf("[SandboxHost][trace] %s %+v", event, details)
+	log.Printf("[ProjectRuntime][trace] %s %+v", event, details)
 }

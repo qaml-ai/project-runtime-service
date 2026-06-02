@@ -234,7 +234,7 @@ func safeR2MountName(value string) string {
 
 func defaultR2CredentialsRoot() string {
 	if runtime.GOOS == "linux" {
-		return "/run/chiridion-r2-creds"
+		return "/run/project-runtime-r2-creds"
 	}
 	return ""
 }

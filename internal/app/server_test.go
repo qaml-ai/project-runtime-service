@@ -12,7 +12,7 @@ import (
 
 func TestSandboxNameNormalization(t *testing.T) {
 	got := sandboxName("Workspace_ABC/..//Name")
-	want := "chiridion-ws-workspace-abc-name"
+	want := "project-runtime-ws-workspace-abc-name"
 	if got != want {
 		t.Fatalf("sandboxName mismatch: got %q want %q", got, want)
 	}
@@ -41,7 +41,7 @@ func TestParseWorkspaceRoute(t *testing.T) {
 	if route.OrgID != "org-1" || route.WorkspaceID != "ws-2" || route.Subpath != "/fs/read" {
 		t.Fatalf("unexpected route: %+v", route)
 	}
-	if route.Name != "chiridion-ws-ws-2" {
+	if route.Name != "project-runtime-ws-ws-2" {
 		t.Fatalf("unexpected sandbox name: %s", route.Name)
 	}
 }
@@ -171,8 +171,8 @@ func TestForwardCloudflareAPIProxyRequest(t *testing.T) {
 
 	server := &Server{
 		cfg: Config{
-			WorkerBaseURL:      upstream.URL,
-			SandboxProxySecret: "shared-secret",
+			WorkerBaseURL:             upstream.URL,
+			ProjectRuntimeProxySecret: "shared-secret",
 		},
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,

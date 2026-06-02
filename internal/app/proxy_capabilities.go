@@ -28,7 +28,7 @@ func loadProxyCapabilities(cfg Config) map[string]ProxyCapability {
 	if raw == "" && strings.TrimSpace(cfg.ProxyCapabilitiesFile) != "" {
 		content, err := os.ReadFile(cfg.ProxyCapabilitiesFile)
 		if err != nil {
-			log.Printf("[SandboxHost] failed to read proxy capability file %s: %v", cfg.ProxyCapabilitiesFile, err)
+			log.Printf("[ProjectRuntime] failed to read proxy capability file %s: %v", cfg.ProxyCapabilitiesFile, err)
 			return map[string]ProxyCapability{}
 		}
 		raw = string(content)
@@ -39,7 +39,7 @@ func loadProxyCapabilities(cfg Config) map[string]ProxyCapability {
 
 	var parsed proxyCapabilityConfig
 	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
-		log.Printf("[SandboxHost] failed to parse proxy capabilities: %v", err)
+		log.Printf("[ProjectRuntime] failed to parse proxy capabilities: %v", err)
 		return map[string]ProxyCapability{}
 	}
 	out := make(map[string]ProxyCapability, len(parsed.Capabilities))
@@ -186,6 +186,5 @@ func copyProxyHeaders(dst, src http.Header) {
 func isSpoofableProjectHeader(key string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(key))
 	return strings.HasPrefix(normalized, "x-project-runtime-") ||
-		strings.HasPrefix(normalized, "x-chiridion-") ||
 		normalized == "x-sandbox-secret"
 }

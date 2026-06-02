@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
-# Azure VM provisioning script for Chiridion sandbox host.
+# Azure VM provisioning script for Project Runtime Service.
 # Storage model:
 #   - Durable Azure Premium SSD v2 attached disk
-#   - XFS mounted at /srv/sandboxes (with prjquota enabled)
-#   - One directory per sandbox under /srv/sandboxes
+#   - XFS mounted at /srv/project-runtime (with prjquota enabled)
+#   - One directory per project under /srv/project-runtime
 #
 # Usage: sudo bash setup-host.sh
 #
@@ -22,23 +22,19 @@ ensure_line_in_file() {
   fi
 }
 
-echo "=== Chiridion Sandbox Host Setup (XFS + Premium SSD v2) ==="
+echo "=== Project Runtime Service Setup (XFS + Premium SSD v2) ==="
 
-SANDBOXES_DIR="${SANDBOXES_DIR:-/srv/sandboxes}"
-SANDBOX_DATA_DEVICE="${SANDBOX_DATA_DEVICE:-/dev/disk/azure/data/by-lun/0}"
-DOCKER_DATA_ROOT="${SANDBOXES_DIR}/.docker"
-SANDBOX_DEFAULT_BHARD="${SANDBOX_DEFAULT_BHARD:-100g}"
-SANDBOX_DEFAULT_IHARD="${SANDBOX_DEFAULT_IHARD:-0}"
+PROJECT_RUNTIME_ROOT="${PROJECT_RUNTIME_ROOT:-/srv/project-runtime}"
+PROJECT_RUNTIME_DATA_DEVICE="${PROJECT_RUNTIME_DATA_DEVICE:-/dev/disk/azure/data/by-lun/0}"
+DOCKER_DATA_ROOT="${PROJECT_RUNTIME_ROOT}/.docker"
+PROJECT_RUNTIME_DEFAULT_BHARD="${PROJECT_RUNTIME_DEFAULT_BHARD:-100g}"
+PROJECT_RUNTIME_DEFAULT_IHARD="${PROJECT_RUNTIME_DEFAULT_IHARD:-0}"
 
-if [ -n "${ACR_LOGIN_SERVER:-}" ]; then
-  SANDBOX_IMAGE="${ACR_LOGIN_SERVER}/chiridion-sandbox:latest"
-else
-  SANDBOX_IMAGE="chiridion-sandbox:latest"
-fi
+PROJECT_RUNTIME_IMAGE="${PROJECT_RUNTIME_IMAGE:-project-runtime-basic:latest}"
 
 resolve_data_device() {
-  if [ -b "$SANDBOX_DATA_DEVICE" ]; then
-    echo "$SANDBOX_DATA_DEVICE"
+  if [ -b "$PROJECT_RUNTIME_DATA_DEVICE" ]; then
+    echo "$PROJECT_RUNTIME_DATA_DEVICE"
     return 0
   fi
 
@@ -71,7 +67,7 @@ setup_xfs_data_disk() {
 
   local data_device
   if ! data_device="$(resolve_data_device)"; then
-    log "  ERROR: could not locate data disk. Set SANDBOX_DATA_DEVICE to your Premium SSD v2 device path."
+    log "  ERROR: could not locate data disk. Set PROJECT_RUNTIME_DATA_DEVICE to your Premium SSD v2 device path."
     exit 1
   fi
 
@@ -93,22 +89,22 @@ setup_xfs_data_disk() {
   local uuid
   uuid="$(blkid -o value -s UUID "$data_device")"
   local escaped_root
-  escaped_root="$(printf '%s\n' "$SANDBOXES_DIR" | sed 's/[][\\/.^$*]/\\&/g')"
+  escaped_root="$(printf '%s\n' "$PROJECT_RUNTIME_ROOT" | sed 's/[][\\/.^$*]/\\&/g')"
 
-  mkdir -p "$SANDBOXES_DIR"
+  mkdir -p "$PROJECT_RUNTIME_ROOT"
   sed -i "\\|[[:space:]]${escaped_root}[[:space:]]|d" /etc/fstab
-  ensure_line_in_file "UUID=${uuid}  ${SANDBOXES_DIR}  xfs  defaults,noatime,prjquota,nofail  0  2" /etc/fstab
+  ensure_line_in_file "UUID=${uuid}  ${PROJECT_RUNTIME_ROOT}  xfs  defaults,noatime,prjquota,nofail  0  2" /etc/fstab
 
-  if mountpoint -q "$SANDBOXES_DIR" 2>/dev/null; then
-    log "  ${SANDBOXES_DIR} already mounted."
+  if mountpoint -q "$PROJECT_RUNTIME_ROOT" 2>/dev/null; then
+    log "  ${PROJECT_RUNTIME_ROOT} already mounted."
   else
-    mount "$SANDBOXES_DIR"
-    log "  Mounted ${SANDBOXES_DIR}"
+    mount "$PROJECT_RUNTIME_ROOT"
+    log "  Mounted ${PROJECT_RUNTIME_ROOT}"
   fi
 
-  mkdir -p "${SANDBOXES_DIR}/.sandbox-host" "${SANDBOXES_DIR}/.docker"
-  chmod 0755 "$SANDBOXES_DIR"
-  chmod 0700 "${SANDBOXES_DIR}/.sandbox-host"
+  mkdir -p "${PROJECT_RUNTIME_ROOT}/.project-runtime" "${PROJECT_RUNTIME_ROOT}/.docker"
+  chmod 0755 "$PROJECT_RUNTIME_ROOT"
+  chmod 0700 "${PROJECT_RUNTIME_ROOT}/.project-runtime"
 }
 
 install_docker_and_runtime() {
@@ -148,7 +144,7 @@ __DOCKER_DAEMON__
 }
 
 install_go_and_host_service() {
-  log "[5/7] Installing Go + sandbox-host service..."
+  log "[5/7] Installing Go + project runtime service..."
 
   local required_go_version="${REQUIRED_GO_VERSION:-1.24.0}"
   local install_go_version="${INSTALL_GO_VERSION:-1.25.7}"
@@ -190,19 +186,19 @@ install_go_and_host_service() {
   local script_dir service_dir host_binary_path data_proxy_binary_path
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   service_dir="$(cd "${script_dir}/.." && pwd)"
-  host_binary_path="/usr/local/bin/chiridion-sandbox-host"
-  data_proxy_binary_path="/usr/local/bin/chiridion-data-proxy"
-  local quota_tool_path="/usr/local/bin/chiridion-xfs-project-quota"
+  host_binary_path="/usr/local/bin/project-runtime"
+  data_proxy_binary_path="/usr/local/bin/project-runtime-data-proxy"
+  local quota_tool_path="/usr/local/bin/project-runtime-xfs-project-quota"
 
-  go build -C "${service_dir}" -o "${host_binary_path}" ./cmd/sandbox-host
+  go build -C "${service_dir}" -o "${host_binary_path}" ./cmd/project-runtime
   go build -C "${service_dir}" -o "${data_proxy_binary_path}" ./cmd/data-proxy
   chmod 0755 "${host_binary_path}"
   chmod 0755 "${data_proxy_binary_path}"
   install -m 0755 "${service_dir}/scripts/xfs-project-quota.sh" "${quota_tool_path}"
 
-  cat > /etc/systemd/system/chiridion-data-proxy.service <<__DATA_PROXY_SERVICE__
+  cat > /etc/systemd/system/project-runtime-data-proxy.service <<__DATA_PROXY_SERVICE__
 [Unit]
-Description=Chiridion SQL Data Proxy
+Description=Project Runtime Data Proxy
 After=network-online.target
 Wants=network-online.target
 
@@ -214,7 +210,7 @@ Restart=always
 RestartSec=2
 Environment=DATA_PROXY_PORT=8090
 Environment=DATA_PROXY_MAX_REQUEST_BYTES=1048576
-EnvironmentFile=-/etc/chiridion/sandbox-host.env
+EnvironmentFile=-/etc/project-runtime/service.env
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectControlGroups=true
@@ -232,12 +228,12 @@ LimitNOFILE=65535
 WantedBy=multi-user.target
 __DATA_PROXY_SERVICE__
 
-  cat > /etc/systemd/system/chiridion-sandbox-host.service <<__HOST_SERVICE__
+  cat > /etc/systemd/system/project-runtime.service <<__HOST_SERVICE__
 [Unit]
-Description=Chiridion Sandbox Host
-After=local-fs.target docker.service chiridion-sandbox-firewall.service chiridion-data-proxy.service
+Description=Project Runtime Service
+After=local-fs.target docker.service project-runtime-firewall.service project-runtime-data-proxy.service
 Requires=docker.service
-Wants=chiridion-sandbox-firewall.service chiridion-data-proxy.service
+Wants=project-runtime-firewall.service project-runtime-data-proxy.service
 
 [Service]
 Type=simple
@@ -246,17 +242,17 @@ ExecStart=${host_binary_path}
 Restart=always
 RestartSec=5
 Environment=PORT=80
-Environment=SANDBOX_DOCKER_PROXY_PORT=8081
-Environment=WORKSPACES_ROOT=${SANDBOXES_DIR}
-Environment=SANDBOX_HOST_USAGE_DB_DIR=${SANDBOXES_DIR}/.sandbox-host/usage
-Environment=SANDBOX_IMAGE=${SANDBOX_IMAGE}
+Environment=PROJECT_RUNTIME_DOCKER_PROXY_PORT=8081
+Environment=WORKSPACES_ROOT=${PROJECT_RUNTIME_ROOT}
+Environment=PROJECT_RUNTIME_USAGE_DB_DIR=${PROJECT_RUNTIME_ROOT}/.project-runtime/usage
+Environment=PROJECT_RUNTIME_IMAGE=${PROJECT_RUNTIME_IMAGE}
 Environment=CONTAINER_RUNTIME=runsc
-Environment=SANDBOX_ENABLE_PROJECT_QUOTA=1
-Environment=SANDBOX_DEFAULT_BHARD=${SANDBOX_DEFAULT_BHARD}
-Environment=SANDBOX_DEFAULT_IHARD=${SANDBOX_DEFAULT_IHARD}
+Environment=PROJECT_RUNTIME_ENABLE_PROJECT_QUOTA=1
+Environment=PROJECT_RUNTIME_DEFAULT_BHARD=${PROJECT_RUNTIME_DEFAULT_BHARD}
+Environment=PROJECT_RUNTIME_DEFAULT_IHARD=${PROJECT_RUNTIME_DEFAULT_IHARD}
 Environment=DATA_PROXY_PORT=8090
 Environment=DATA_PROXY_UPSTREAM_URL=http://127.0.0.1:8090
-EnvironmentFile=-/etc/chiridion/sandbox-host.env
+EnvironmentFile=-/etc/project-runtime/service.env
 LimitNOFILE=65535
 
 [Install]
@@ -267,7 +263,7 @@ __HOST_SERVICE__
 install_firewall_service() {
   log "[6/7] Installing firewall rules service..."
 
-  cat > /usr/local/bin/chiridion-apply-firewall.sh <<'__FIREWALL_SCRIPT__'
+  cat > /usr/local/bin/project-runtime-apply-firewall.sh <<'__FIREWALL_SCRIPT__'
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -323,19 +319,19 @@ else
   echo "[firewall] WARNING: ipset not available; china block not applied"
 fi
 __FIREWALL_SCRIPT__
-  chmod +x /usr/local/bin/chiridion-apply-firewall.sh
+  chmod +x /usr/local/bin/project-runtime-apply-firewall.sh
 
-  cat > /etc/systemd/system/chiridion-sandbox-firewall.service <<'__FIREWALL_SERVICE__'
+  cat > /etc/systemd/system/project-runtime-firewall.service <<'__FIREWALL_SERVICE__'
 [Unit]
-Description=Apply Chiridion sandbox-host firewall policy
+Description=Apply Project Runtime firewall policy
 After=docker.service network-online.target
 Wants=docker.service network-online.target
-Before=chiridion-sandbox-host.service
+Before=project-runtime.service
 
 [Service]
 Type=oneshot
-EnvironmentFile=-/etc/chiridion/sandbox-host.env
-ExecStart=/usr/local/bin/chiridion-apply-firewall.sh
+EnvironmentFile=-/etc/project-runtime/service.env
+ExecStart=/usr/local/bin/project-runtime-apply-firewall.sh
 RemainAfterExit=yes
 
 [Install]
@@ -347,22 +343,22 @@ __FIREWALL_SERVICE__
 install_r2_mount_support() {
   log "Installing R2 FUSE support..."
 
-  mkdir -p /run/chiridion-r2-creds
-  chmod 0700 /run/chiridion-r2-creds
+  mkdir -p /run/project-runtime-r2-creds
+  chmod 0700 /run/project-runtime-r2-creds
 
   if [ -f /etc/fuse.conf ] && ! grep -q '^user_allow_other$' /etc/fuse.conf; then
     echo user_allow_other >> /etc/fuse.conf
   fi
 
-  # New containers mount their own R2 prefixes inside the sandbox with
-  # short-lived, prefix-scoped credentials generated by sandbox-host.
+  # New containers mount their own R2 prefixes inside the container with
+  # short-lived, prefix-scoped credentials generated by project runtime.
   # Leave any currently running legacy global mount alone so existing containers
   # can keep working, but keep it from coming back after the next reboot.
-  systemctl disable chiridion-s3fs-r2 2>/dev/null || true
+  systemctl disable project-runtime-s3fs-r2 2>/dev/null || true
 }
 
 install_cloudflared_and_acr() {
-  log "[7/7] Installing cloudflared and pre-pulling sandbox image..."
+  log "[7/7] Installing cloudflared and pre-pulling runtime image..."
 
   if ! command -v cloudflared >/dev/null 2>&1; then
     mkdir -p --mode=0755 /usr/share/keyrings
@@ -385,25 +381,25 @@ install_cloudflared_and_acr() {
       curl -sL https://aka.ms/InstallAzureCLIDeb | bash >/dev/null 2>&1
     fi
     az acr login --name "${ACR_LOGIN_SERVER%%.*}" 2>/dev/null || true
-    docker pull "$SANDBOX_IMAGE" 2>&1 || log "  WARNING: image pull failed; ensure the sandbox image exists in ACR."
+    docker pull "$PROJECT_RUNTIME_IMAGE" 2>&1 || log "  WARNING: image pull failed; ensure the runtime image exists in ACR."
   fi
 }
 
 apply_default_quotas() {
-  local quota_tool="/usr/local/bin/chiridion-xfs-project-quota"
+  local quota_tool="/usr/local/bin/project-runtime-xfs-project-quota"
   if [ ! -x "$quota_tool" ]; then
     log "Quota helper not installed at ${quota_tool}; skipping quota backfill."
     return 0
   fi
 
-  log "Applying default quota (${SANDBOX_DEFAULT_BHARD}, ihard=${SANDBOX_DEFAULT_IHARD}) to existing sandboxes..."
-  local sandbox_dir sandbox_id
-  for sandbox_dir in "${SANDBOXES_DIR}"/*; do
-    [ -d "$sandbox_dir" ] || continue
-    sandbox_id="$(basename "$sandbox_dir")"
-    [ "$sandbox_id" = ".sandbox-host" ] && continue
-    if ! MOUNT_ROOT="$SANDBOXES_DIR" "$quota_tool" set "$sandbox_id" "$SANDBOX_DEFAULT_BHARD" "$SANDBOX_DEFAULT_IHARD" >/dev/null 2>&1; then
-      log "  WARNING: failed to apply quota for ${sandbox_id}"
+  log "Applying default quota (${PROJECT_RUNTIME_DEFAULT_BHARD}, ihard=${PROJECT_RUNTIME_DEFAULT_IHARD}) to existing projects..."
+  local project_dir project_id
+  for project_dir in "${PROJECT_RUNTIME_ROOT}"/*; do
+    [ -d "$project_dir" ] || continue
+    project_id="$(basename "$project_dir")"
+    [ "$project_id" = ".project-runtime" ] && continue
+    if ! MOUNT_ROOT="$PROJECT_RUNTIME_ROOT" "$quota_tool" set "$project_id" "$PROJECT_RUNTIME_DEFAULT_BHARD" "$PROJECT_RUNTIME_DEFAULT_IHARD" >/dev/null 2>&1; then
+      log "  WARNING: failed to apply quota for ${project_id}"
     fi
   done
 }
@@ -423,26 +419,26 @@ main() {
   apply_default_quotas
 
   systemctl daemon-reload
-  systemctl enable --now chiridion-data-proxy 2>/dev/null || true
-  systemctl enable --now chiridion-sandbox-firewall 2>/dev/null || true
+  systemctl enable --now project-runtime-data-proxy 2>/dev/null || true
+  systemctl enable --now project-runtime-firewall 2>/dev/null || true
 
-  systemctl enable --now chiridion-sandbox-host 2>/dev/null || true
+  systemctl enable --now project-runtime 2>/dev/null || true
 
   echo ""
   echo "=== Setup complete ==="
   echo ""
   echo "Storage layout:"
-  echo "  ${SANDBOXES_DIR}            - Durable Premium SSD v2 (XFS, prjquota enabled)"
-  echo "  ${SANDBOXES_DIR}/<sandbox>  - Per-sandbox persistent root"
-  echo "  Default per-sandbox quota   - ${SANDBOX_DEFAULT_BHARD} (ihard=${SANDBOX_DEFAULT_IHARD})"
-  echo "  ${SANDBOXES_DIR}/.sandbox-host/usage - sandbox-host usage databases"
+  echo "  ${PROJECT_RUNTIME_ROOT}            - Durable Premium SSD v2 (XFS, prjquota enabled)"
+  echo "  ${PROJECT_RUNTIME_ROOT}/<project>  - Per-project persistent root"
+  echo "  Default per-project quota   - ${PROJECT_RUNTIME_DEFAULT_BHARD} (ihard=${PROJECT_RUNTIME_DEFAULT_IHARD})"
+  echo "  ${PROJECT_RUNTIME_ROOT}/.project-runtime/usage - project runtime usage databases"
   echo "  ${DOCKER_DATA_ROOT}     - Docker data-root"
   echo ""
   echo "To verify:"
-  echo "  findmnt ${SANDBOXES_DIR}"
-  echo "  xfs_info ${SANDBOXES_DIR}"
-  echo "  systemctl status chiridion-data-proxy"
-  echo "  systemctl status chiridion-sandbox-host"
+  echo "  findmnt ${PROJECT_RUNTIME_ROOT}"
+  echo "  xfs_info ${PROJECT_RUNTIME_ROOT}"
+  echo "  systemctl status project-runtime-data-proxy"
+  echo "  systemctl status project-runtime"
 }
 
 main "$@"

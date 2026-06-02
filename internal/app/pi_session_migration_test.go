@@ -324,7 +324,7 @@ func assertMigratedPiAssistantMetadata(t *testing.T, migrated string) {
 		if event.Type != "message" || firstString(event.Message, "role") != "assistant" {
 			continue
 		}
-		if firstString(event.Message, "api") != "chiridion-legacy-migration" {
+		if firstString(event.Message, "api") != "project-runtime-legacy-migration" {
 			t.Fatalf("assistant message missing migration api: %#v", event.Message)
 		}
 		if firstString(event.Message, "provider") == "" || firstString(event.Message, "model") == "" {

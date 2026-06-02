@@ -13,7 +13,7 @@ import (
 
 func TestCreateR2TempCredentialScopesToPrefix(t *testing.T) {
 	m := &Manager{
-		r2BucketName:      "chiridion-sandbox",
+		r2BucketName:      "project-runtime-test",
 		r2AccountID:       "account123",
 		r2AccessKeyID:     "parent-key",
 		r2SecretAccessKey: "parent-secret",
@@ -65,7 +65,7 @@ func TestCreateR2TempCredentialScopesToPrefix(t *testing.T) {
 		t.Fatalf("unmarshal jwt payload: %v", err)
 	}
 
-	if claims.Bucket != "chiridion-sandbox" ||
+	if claims.Bucket != "project-runtime-test" ||
 		claims.Scope != "object-read-write" ||
 		claims.Sub != "account123" ||
 		claims.Iss != "parent-key" ||
@@ -90,14 +90,14 @@ func TestPrepareContainerR2ConfigWritesSeparateUploadAndOutputCredentials(t *tes
 	root := t.TempDir()
 	m := &Manager{
 		r2CredentialsRoot:          root,
-		r2BucketName:               "chiridion-sandbox",
+		r2BucketName:               "project-runtime-test",
 		r2AccountID:                "account123",
 		r2AccessKeyID:              "parent-key",
 		r2SecretAccessKey:          "parent-secret",
 		r2TempCredentialTTLSeconds: 900,
 	}
 
-	cfg, err := m.prepareContainerR2Config("chiridion/ws:abc", "org-1", "workspace-1")
+	cfg, err := m.prepareContainerR2Config("project-runtime/ws:abc", "org-1", "workspace-1")
 	if err != nil {
 		t.Fatalf("prepareContainerR2Config returned error: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestPrepareContainerR2ConfigWritesSeparateUploadAndOutputCredentials(t *tes
 	if cfg.outputsPrefix != "org-1/workspace-1/user-outputs/" {
 		t.Fatalf("unexpected outputs prefix: %q", cfg.outputsPrefix)
 	}
-	if cfg.credentialsDir != filepath.Join(root, "chiridion_ws_abc") {
+	if cfg.credentialsDir != filepath.Join(root, "project-runtime_ws_abc") {
 		t.Fatalf("unexpected credential dir: %q", cfg.credentialsDir)
 	}
 

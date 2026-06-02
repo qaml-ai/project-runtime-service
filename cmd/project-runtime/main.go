@@ -24,12 +24,12 @@ func main() {
 
 	usageStore, err := state.NewUsageStore(cfg.UsageDBRoot)
 	if err != nil {
-		log.Printf("[SandboxHost] usage store unavailable (%s): %v; running without spend tracking", cfg.UsageDBRoot, err)
+		log.Printf("[ProjectRuntime] usage store unavailable (%s): %v; running without spend tracking", cfg.UsageDBRoot, err)
 	}
 	if usageStore != nil {
 		defer func() {
 			if closeErr := usageStore.Close(); closeErr != nil {
-				log.Printf("[SandboxHost] failed to close usage store: %v", closeErr)
+				log.Printf("[ProjectRuntime] failed to close usage store: %v", closeErr)
 			}
 		}()
 	}
@@ -62,7 +62,7 @@ func main() {
 	errCh := make(chan error, 1)
 	shutdownDone := make(chan struct{})
 
-	log.Printf("[SandboxHost] control listener on %s", cfg.ListenAddr)
+	log.Printf("[ProjectRuntime] control listener on %s", cfg.ListenAddr)
 	go func() {
 		var err error
 		if httpServer.TLSConfig != nil {
@@ -74,7 +74,7 @@ func main() {
 			errCh <- fmt.Errorf("control listener failed: %w", err)
 		}
 	}()
-	log.Printf("[SandboxHost] docker proxy listener on %s", cfg.DockerProxyListenAddr)
+	log.Printf("[ProjectRuntime] docker proxy listener on %s", cfg.DockerProxyListenAddr)
 	go func() {
 		if err := dockerProxyServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			errCh <- fmt.Errorf("docker proxy listener failed: %w", err)
@@ -85,14 +85,14 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		sig := <-sigCh
-		log.Printf("[SandboxHost] received %s; shutting down", sig)
+		log.Printf("[ProjectRuntime] received %s; shutting down", sig)
 
 		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 30*time.Second)
 		if err := httpServer.Shutdown(shutdownCtx); err != nil {
-			log.Printf("[SandboxHost] control listener shutdown failed: %v", err)
+			log.Printf("[ProjectRuntime] control listener shutdown failed: %v", err)
 		}
 		if err := dockerProxyServer.Shutdown(shutdownCtx); err != nil {
-			log.Printf("[SandboxHost] docker proxy listener shutdown failed: %v", err)
+			log.Printf("[ProjectRuntime] docker proxy listener shutdown failed: %v", err)
 		}
 		cancelShutdown()
 		close(shutdownDone)
@@ -100,9 +100,9 @@ func main() {
 
 	select {
 	case err := <-errCh:
-		log.Fatalf("sandbox-host stopped: %v", err)
+		log.Fatalf("project runtime stopped: %v", err)
 	case <-shutdownDone:
-		log.Printf("[SandboxHost] shutdown complete")
+		log.Printf("[ProjectRuntime] shutdown complete")
 	}
 }
 
