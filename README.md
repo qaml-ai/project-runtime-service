@@ -93,6 +93,30 @@ In ZFS mode, each project maps to:
 - Mountpoint: `/srv/project-runtime/<project-runtime-name>`
 - Container bind mount: configurable, defaulting to `/workspace`
 
+For Azure Premium SSD v2 hosts, set ZFS auto-expand on the pool:
+
+```bash
+sudo zpool set autoexpand=on projectruntime
+```
+
+`autoexpand=on` lets ZFS consume newly-added capacity after the managed disk is
+resized. To trigger Azure disk growth automatically, install
+`scripts/grow-azure-zfs-disk.sh` as a root systemd timer and give the VM's managed
+identity `Contributor` scoped only to the project-runtime managed disk. Example
+timer config:
+
+```text
+AZURE_SUBSCRIPTION_ID=...
+AZURE_RESOURCE_GROUP=rg-chiridion-sandbox-prod
+AZURE_DISK_NAME=datadisk-project-runtime-prod
+AZURE_DISK_LUN=1
+ZPOOL_NAME=projectruntime
+MIN_FREE_BYTES=107374182400
+GROW_AT_CAP_PERCENT=85
+GROW_INCREMENT_GB=1024
+MAX_DISK_GB=10240
+```
+
 Directory mode remains available for simpler hosts. Recommended directory-mode mount
 options:
 
