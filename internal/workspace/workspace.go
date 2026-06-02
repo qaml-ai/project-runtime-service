@@ -173,9 +173,6 @@ func (m *Manager) CloneReflink(sourceName, targetName string) error {
 		_ = os.RemoveAll(targetTmp)
 	}()
 
-	if err := runCommand("sync"); err != nil {
-		return fmt.Errorf("sync source workspace before clone: %w", err)
-	}
 	if err := runCommand("cp", "-a", "--reflink=always", sourceDir+"/.", targetTmp+"/"); err != nil {
 		return fmt.Errorf("%w: %v", ErrReflinkCloneUnavailable, err)
 	}
