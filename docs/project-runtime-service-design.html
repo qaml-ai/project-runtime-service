@@ -1,0 +1,787 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Project Runtime Service Design</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f7f7f4;
+      --ink: #1f2933;
+      --muted: #65717f;
+      --line: #d9ddd7;
+      --panel: #ffffff;
+      --soft: #eef3ef;
+      --green: #246b4f;
+      --blue: #285e8f;
+      --red: #984447;
+      --gold: #8a6428;
+      --code: #172033;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background:
+        linear-gradient(180deg, rgba(255,255,255,.7), rgba(255,255,255,0) 260px),
+        var(--bg);
+      color: var(--ink);
+      font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      letter-spacing: 0;
+    }
+
+    header {
+      border-bottom: 1px solid var(--line);
+      background: rgba(247, 247, 244, .92);
+      backdrop-filter: blur(10px);
+      position: sticky;
+      top: 0;
+      z-index: 2;
+    }
+
+    .bar {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 14px 28px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+      min-width: 0;
+    }
+
+    .brand strong {
+      font-size: 16px;
+      white-space: nowrap;
+    }
+
+    .brand span {
+      color: var(--muted);
+      font-size: 13px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    nav {
+      display: flex;
+      gap: 14px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    nav a {
+      color: var(--muted);
+      text-decoration: none;
+      font-size: 13px;
+    }
+
+    nav a:hover {
+      color: var(--ink);
+    }
+
+    main {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 42px 28px 70px;
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.12fr) minmax(320px, .88fr);
+      gap: 28px;
+      align-items: start;
+      margin-bottom: 32px;
+    }
+
+    h1 {
+      font-size: clamp(34px, 5vw, 62px);
+      line-height: 1.02;
+      margin: 0 0 18px;
+      max-width: 840px;
+      letter-spacing: 0;
+    }
+
+    .lead {
+      color: var(--muted);
+      font-size: 18px;
+      max-width: 720px;
+      margin: 0;
+    }
+
+    .decision {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      border-radius: 8px;
+      padding: 20px;
+      box-shadow: 0 1px 2px rgba(31, 41, 51, .05);
+    }
+
+    .decision h2,
+    section h2 {
+      margin: 0 0 12px;
+      font-size: 22px;
+      line-height: 1.2;
+    }
+
+    .decision p,
+    section p {
+      margin: 0 0 12px;
+      color: var(--muted);
+    }
+
+    .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 16px;
+    }
+
+    .chip {
+      border: 1px solid var(--line);
+      background: var(--soft);
+      border-radius: 999px;
+      padding: 5px 10px;
+      font-size: 12px;
+      color: #3d4a56;
+      white-space: nowrap;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(12, 1fr);
+      gap: 18px;
+      margin: 22px 0 36px;
+    }
+
+    section {
+      grid-column: span 12;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 24px;
+      box-shadow: 0 1px 2px rgba(31, 41, 51, .04);
+    }
+
+    .half {
+      grid-column: span 6;
+    }
+
+    .third {
+      grid-column: span 4;
+    }
+
+    .two-third {
+      grid-column: span 8;
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 18px;
+    }
+
+    .node {
+      min-height: 110px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      background: #fbfbfa;
+      position: relative;
+    }
+
+    .node:not(:last-child)::after {
+      content: ">";
+      position: absolute;
+      right: -14px;
+      top: 43px;
+      color: var(--muted);
+      font-weight: 700;
+      z-index: 1;
+    }
+
+    .node strong {
+      display: block;
+      margin-bottom: 6px;
+    }
+
+    .node span {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    ul {
+      margin: 12px 0 0;
+      padding-left: 20px;
+    }
+
+    li {
+      margin: 7px 0;
+      color: var(--muted);
+    }
+
+    li strong {
+      color: var(--ink);
+    }
+
+    pre {
+      margin: 14px 0 0;
+      padding: 16px;
+      background: var(--code);
+      color: #e8edf4;
+      border-radius: 8px;
+      overflow: auto;
+      font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    }
+
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      font-size: .92em;
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+      margin-top: 14px;
+    }
+
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      min-width: 640px;
+      font-size: 14px;
+    }
+
+    th,
+    td {
+      border-bottom: 1px solid var(--line);
+      padding: 11px 10px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      color: #344454;
+      background: #fafaf8;
+      font-weight: 650;
+    }
+
+    td {
+      color: var(--muted);
+    }
+
+    .callout {
+      border-left: 4px solid var(--green);
+      background: #f2f7f3;
+      padding: 14px 16px;
+      margin-top: 16px;
+      border-radius: 0 8px 8px 0;
+      color: #335145;
+    }
+
+    .risk {
+      border-left-color: var(--red);
+      background: #fbf1f1;
+      color: #644042;
+    }
+
+    .metric {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 8px;
+      border-bottom: 1px solid var(--line);
+      padding: 10px 0;
+    }
+
+    .metric:last-child {
+      border-bottom: 0;
+    }
+
+    .metric span {
+      color: var(--muted);
+    }
+
+    .metric strong {
+      color: var(--blue);
+    }
+
+    .tagline {
+      color: var(--gold);
+      font-weight: 650;
+      margin-bottom: 8px;
+      text-transform: uppercase;
+      font-size: 12px;
+      letter-spacing: .08em;
+    }
+
+    footer {
+      color: var(--muted);
+      border-top: 1px solid var(--line);
+      padding-top: 24px;
+      margin-top: 32px;
+      font-size: 13px;
+    }
+
+    @media (max-width: 900px) {
+      .hero,
+      .flow {
+        grid-template-columns: 1fr;
+      }
+
+      .half,
+      .third,
+      .two-third {
+        grid-column: span 12;
+      }
+
+      .node:not(:last-child)::after {
+        content: "v";
+        right: 18px;
+        top: auto;
+        bottom: -18px;
+      }
+    }
+
+    @media (max-width: 680px) {
+      .bar {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      nav {
+        justify-content: flex-start;
+      }
+
+      main {
+        padding: 28px 16px 54px;
+      }
+
+      section,
+      .decision {
+        padding: 18px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="bar">
+      <div class="brand">
+        <strong>Project Runtime Service</strong>
+        <span>self-hosted compute, fast clones, generic authenticated egress</span>
+      </div>
+      <nav aria-label="Document sections">
+        <a href="#architecture">Architecture</a>
+        <a href="#proxy">Proxy</a>
+        <a href="#storage">Storage</a>
+        <a href="#api">API</a>
+        <a href="#rollout">Rollout</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <div class="hero">
+      <div>
+        <div class="tagline">Design direction</div>
+        <h1>Extract the sandbox runtime into a boring, fast project compute service.</h1>
+        <p class="lead">
+          The main app should own product state and agent orchestration. The runtime service should own
+          containers, project disks, command execution, file operations, copy-on-write clones, backups,
+          quotas, disk growth, and project-scoped outbound capabilities.
+        </p>
+      </div>
+      <aside class="decision">
+        <h2>Recommended path</h2>
+        <p>
+          Keep the new explicit Projects model, but add a <code>sandbox-host</code> backend that talks to
+          our Go service. Then extract that Go service into its own repository once the API stabilizes.
+        </p>
+        <div class="chips">
+          <span class="chip">XFS reflink clones</span>
+          <span class="chip">gVisor containers</span>
+          <span class="chip">project quotas</span>
+          <span class="chip">generic egress proxy</span>
+          <span class="chip">lazy container start</span>
+        </div>
+      </aside>
+    </div>
+
+    <div class="grid">
+      <section id="architecture">
+        <h2>Architecture</h2>
+        <p>
+          The clean split is a narrow runtime API between camelAI and one or more compute backends.
+          Cloudflare Sandbox, exe.dev, and our Go sandbox-host should all implement the same conceptual contract.
+        </p>
+        <div class="flow" aria-label="Architecture flow">
+          <div class="node">
+            <strong>Agent</strong>
+            <span>Calls <code>js_exec</code>, file tools, bash, project clone, and project list.</span>
+          </div>
+          <div class="node">
+            <strong>Main Worker</strong>
+            <span>Checks auth, stores project metadata, picks backend, signs runtime requests.</span>
+          </div>
+          <div class="node">
+            <strong>Backend Adapter</strong>
+            <span>Maps project operations to Cloudflare, exe.dev, or sandbox-host.</span>
+          </div>
+          <div class="node">
+            <strong>Runtime Service</strong>
+            <span>Owns containers, filesystems, quotas, proxies, clone, backup, stop/start.</span>
+          </div>
+          <div class="node">
+            <strong>Project Disk</strong>
+            <span>Persistent working tree mounted at one fixed path inside the container.</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="half">
+        <h2>Responsibilities</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Layer</th>
+                <th>Owns</th>
+                <th>Does not own</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Main app</td>
+                <td>Users, orgs, billing, chat, tool schemas, project names, clone relationships, Artifacts remotes.</td>
+                <td>Container lifecycle, disk layout, host quota mechanics, filesystem backup implementation.</td>
+              </tr>
+              <tr>
+                <td>Runtime service</td>
+                <td>Project IDs, containers, file ops, exec, clone, stop/start, quotas, disk health, outbound capabilities.</td>
+                <td>Chat threads, model routing, human-readable product policy, billing decisions.</td>
+              </tr>
+              <tr>
+                <td>Sandbox container</td>
+                <td>User process execution inside isolated project workspace.</td>
+                <td>Provider secrets, raw control-plane APIs, cross-project visibility.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="half">
+        <h2>Why the Go host is attractive again</h2>
+        <p>
+          Production already has the key primitives: local XFS, project quotas, gVisor containers,
+          and <code>reflink=1</code>. That means project clone can be a metadata operation instead
+          of a backup/restore workflow.
+        </p>
+        <div class="metric"><span>Prod sandbox disk</span><strong>10T XFS</strong></div>
+        <div class="metric"><span>Current free space</span><strong>2.7T</strong></div>
+        <div class="metric"><span>Clone primitive</span><strong><code>cp --reflink=always</code></strong></div>
+        <div class="metric"><span>Quota primitive</span><strong>XFS project quotas</strong></div>
+        <div class="metric"><span>Container isolation</span><strong>Docker + gVisor</strong></div>
+      </section>
+
+      <section id="proxy" class="two-third">
+        <h2>Generic authenticated egress proxy</h2>
+        <p>
+          The runtime service should expose named outbound capabilities to a project. A sandbox can use
+          a capability, but it cannot read the credential or create new capabilities.
+        </p>
+        <pre>{
+  "id": "artifacts-main",
+  "projectId": "project_123",
+  "targetBaseUrl": "https://artifacts.cloudflare.net",
+  "allowedHosts": ["artifacts.cloudflare.net", "*.artifacts.cloudflare.net"],
+  "allowedMethods": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+  "auth": {
+    "type": "bearer",
+    "credentialRef": "workspace.cloudflare_artifacts_token"
+  },
+  "headerPolicy": {
+    "stripIncoming": ["authorization", "cookie", "x-forwarded-for"],
+    "set": {
+      "authorization": "Bearer ${credential}",
+      "user-agent": "camelAI-runtime-proxy"
+    }
+  }
+}</pre>
+        <div class="callout">
+          The generic part is request validation, path joining, host allowlisting, header policy,
+          credential injection, streaming, and audit logging. Provider-specific logic should live in
+          small auth plugins or request signers.
+        </div>
+      </section>
+
+      <section class="third">
+        <h2>Proxy auth plugins</h2>
+        <ul>
+          <li><strong><code>none</code>:</strong> allowlist-only outbound access.</li>
+          <li><strong><code>bearer</code>:</strong> inject <code>Authorization: Bearer ...</code>.</li>
+          <li><strong><code>basic</code>:</strong> inject HTTP Basic auth for Git remotes.</li>
+          <li><strong><code>static_header</code>:</strong> inject one or more configured headers.</li>
+          <li><strong><code>aws_sigv4</code>:</strong> sign S3/R2-compatible API requests.</li>
+          <li><strong><code>oauth_bearer</code>:</strong> resolve a refreshed token from a credential reference.</li>
+        </ul>
+        <div class="callout risk">
+          The sandbox must never be able to change the target URL, allowed hosts, or credential reference.
+        </div>
+      </section>
+
+      <section>
+        <h2>exe.dev integration pattern</h2>
+        <p>
+          exe.dev calls these network-mounted capabilities “integrations.” The core abstraction is not a
+          Cloudflare-specific proxy. It is a named internal hostname attached to one or more VMs. The VM
+          talks to <code>http://&lt;integration-name&gt;.int.exe.xyz/</code>, and exe.dev forwards the
+          request to a configured target while injecting authentication outside the VM.
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>exe.dev concept</th>
+                <th>What it does</th>
+                <th>Equivalent in our runtime service</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>integrations add http-proxy</code></td>
+                <td>Creates a named HTTP(S) proxy with injected headers, bearer token, basic auth, no-auth, or peer auth.</td>
+                <td><code>POST /v1/projects/:id/proxies</code> with auth plugin and header policy.</td>
+              </tr>
+              <tr>
+                <td><code>--attach vm:name</code></td>
+                <td>Makes an integration available only to a specific VM.</td>
+                <td>Project-scoped capability attached to one project/container identity.</td>
+              </tr>
+              <tr>
+                <td><code>--attach tag:prod</code></td>
+                <td>Makes an integration available to every VM with a tag.</td>
+                <td>Capability policy attached to project labels or workspace groups.</td>
+              </tr>
+              <tr>
+                <td><code>--attach auto:all</code></td>
+                <td>Makes an integration available to all current and future personal VMs.</td>
+                <td>Org/workspace default capability template.</td>
+              </tr>
+              <tr>
+                <td><code>&lt;name&gt;.int.exe.xyz</code></td>
+                <td>Stable internal DNS name used from inside the VM.</td>
+                <td><code>http://&lt;capability&gt;.proxy.local/</code> or <code>http://runtime.internal/p/:id/</code>.</td>
+              </tr>
+              <tr>
+                <td><code>--peer</code></td>
+                <td>VM-to-VM proxy with generated auth and platform-set caller header.</td>
+                <td>Project-to-project capability with generated service token and host-set caller identity.</td>
+              </tr>
+              <tr>
+                <td>GitHub integration</td>
+                <td>Private Git access through an internal integration hostname, without storing GitHub tokens in the VM.</td>
+                <td>Generic Git HTTPS proxy backed by credential refs or provider app tokens.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout">
+          The design lesson: expose capabilities through stable internal names, attach them by policy,
+          and inject credentials in the runtime service. The sandbox receives network access, not secrets.
+        </div>
+      </section>
+
+      <section id="storage" class="half">
+        <h2>Storage model</h2>
+        <p>
+          Each project gets one host directory on the sandbox disk. The directory is mounted into the
+          container at a fixed path, ideally <code>/workspace/project</code> for the new Projects model.
+        </p>
+        <ul>
+          <li><strong>Clone:</strong> stop or briefly pause source, run <code>sync</code>, reflink-copy to temp dir, apply quota, atomic rename.</li>
+          <li><strong>Start:</strong> create container lazily on first command or file operation.</li>
+          <li><strong>Stop:</strong> stop idle containers aggressively while leaving project disk intact.</li>
+          <li><strong>Backup:</strong> async stream to object storage using restic, kopia, or custom tar/zstd.</li>
+          <li><strong>Growth:</strong> monitor free space and grow Azure data disk before the host is pressured.</li>
+        </ul>
+      </section>
+
+      <section class="half">
+        <h2>Clone flow</h2>
+        <pre>POST /v1/projects/project_b/clone
+
+source = project_a
+target = project_b
+
+1. lock source and target
+2. reject if target already exists
+3. stop or pause source container briefly
+4. sync source filesystem
+5. cp -a --reflink=always source target.tmp
+6. configure target project quota
+7. mv target.tmp target
+8. release locks
+9. return timings</pre>
+        <p>
+          Do not silently fall back to a slow full copy for the fast clone API. If reflink is unavailable,
+          return a clear capability error.
+        </p>
+      </section>
+
+      <section id="api">
+        <h2>Runtime service API shape</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Endpoint</th>
+                <th>Purpose</th>
+                <th>Notes</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>GET /v1/host/capabilities</code></td>
+                <td>Report clone mode, filesystem, quota support, proxy auth plugins, max disk.</td>
+                <td>Main app uses this to decide whether fast clone is supported.</td>
+              </tr>
+              <tr>
+                <td><code>POST /v1/projects/:id/ensure</code></td>
+                <td>Create project disk and optionally start container.</td>
+                <td>Should be idempotent.</td>
+              </tr>
+              <tr>
+                <td><code>POST /v1/projects/:id/exec</code></td>
+                <td>Run a command in the project container.</td>
+                <td>Starts container lazily if needed.</td>
+              </tr>
+              <tr>
+                <td><code>GET/PUT /v1/projects/:id/files/*</code></td>
+                <td>Read, write, list, delete, move files.</td>
+                <td>Use streaming for large files.</td>
+              </tr>
+              <tr>
+                <td><code>POST /v1/projects/:id/clone</code></td>
+                <td>Create a copy-on-write clone from another project.</td>
+                <td>Destination container does not need to start.</td>
+              </tr>
+              <tr>
+                <td><code>POST /v1/projects/:id/proxies</code></td>
+                <td>Provision project-scoped outbound capability.</td>
+                <td>Only main app can call this.</td>
+              </tr>
+              <tr>
+                <td><code>ANY /p/:capabilityId/*</code></td>
+                <td>Runtime egress proxy used from inside the sandbox.</td>
+                <td>Verifies caller project before forwarding.</td>
+              </tr>
+              <tr>
+                <td><code>POST /v1/projects/:id/stop</code></td>
+                <td>Stop a running project container.</td>
+                <td>Disk remains intact.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="third">
+        <h2>Security invariants</h2>
+        <ul>
+          <li>Sandbox code cannot read provider credentials.</li>
+          <li>Sandbox code cannot create or edit proxy capabilities.</li>
+          <li>Every proxy request is bound to a caller project identity.</li>
+          <li>Incoming auth, cookie, and forwarding headers are stripped by default.</li>
+          <li>Targets are allowlisted by exact host or safe wildcard.</li>
+          <li>Unexpected persistence and clone failures fail loudly.</li>
+        </ul>
+      </section>
+
+      <section class="third">
+        <h2>Operational invariants</h2>
+        <ul>
+          <li>Project disks outlive containers.</li>
+          <li>Containers are stopped after short idle windows.</li>
+          <li>Disk free space is monitored and auto-grown before pressure.</li>
+          <li>New work is rejected before the host reaches critical disk usage.</li>
+          <li>Backups are async and observable, not part of every command path.</li>
+          <li>Host restart can rediscover project disks and running containers.</li>
+        </ul>
+      </section>
+
+      <section class="third">
+        <h2>Backend capability matrix</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Backend</th>
+                <th>Best at</th>
+                <th>Weak spot</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Go sandbox-host</td>
+                <td>Fast local clones, clear disk semantics, self-hosting.</td>
+                <td>Single-host scaling unless we add placement.</td>
+              </tr>
+              <tr>
+                <td>exe.dev</td>
+                <td>Managed VMs, fast VM copy, easy external backend.</td>
+                <td>External platform dependency and pricing shape.</td>
+              </tr>
+              <tr>
+                <td>Cloudflare Sandbox</td>
+                <td>Cloudflare integration and Durable Object model.</td>
+                <td>Large restore/clone path is slower for our project workflow.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="rollout" class="two-third">
+        <h2>Rollout plan</h2>
+        <ol>
+          <li>Add <code>PROJECT_VM_BACKEND=sandbox-host</code> adapter in the main app.</li>
+          <li>Add project APIs to the Go sandbox-host without removing the existing workspace APIs.</li>
+          <li>Implement <code>clone</code> using XFS reflink only, with timing output.</li>
+          <li>Implement generic project-scoped egress capabilities.</li>
+          <li>Switch dev-miguel to sandbox-host backend for Projects.</li>
+          <li>Benchmark clone, cold exec, warm exec, file ops, and proxy overhead.</li>
+          <li>Add disk auto-grow and backup status before any broad migration.</li>
+          <li>Extract sandbox-host into a separate repository once API contracts are stable.</li>
+        </ol>
+      </section>
+
+      <section class="third">
+        <h2>Open questions</h2>
+        <ul>
+          <li>Do project containers use <code>/workspace/project</code> or retain <code>/home/claude</code>?</li>
+          <li>Should clones briefly pause the source, stop it, or rely on app-level sync?</li>
+          <li>What is the backup SLA for project disks?</li>
+          <li>How much host-level IO throttling do we need for noisy builds?</li>
+          <li>When do we need multi-host placement?</li>
+        </ul>
+      </section>
+    </div>
+
+    <footer>
+      Draft design doc for the project runtime service direction. This is intentionally generic:
+      provider-specific behavior should be expressed as capabilities, auth plugins, and backend adapters.
+    </footer>
+  </main>
+</body>
+</html>

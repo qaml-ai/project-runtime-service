@@ -1,0 +1,471 @@
+package workspace
+
+import (
+	"bufio"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+)
+
+type ManagerConfig struct {
+	WorkspacesRoot     string
+	EnableProjectQuota bool
+	DefaultBlockHard   string
+	DefaultInodeHard   string
+	ProjectsFile       string
+	ProjidFile         string
+}
+
+type Mount struct {
+	Name      string
+	MergedDir string
+	MountedAt time.Time
+}
+
+type Manager struct {
+	cfg      ManagerConfig
+	mu       sync.RWMutex
+	mounts   map[string]*Mount
+	ensureMu sync.Map // per-name *sync.Mutex — serializes Ensure() per workspace
+	quotaMu  sync.Mutex
+}
+
+const defaultProjectIDStart = 10000
+
+func NewManagerFromEnv() *Manager {
+	cfg := ManagerConfig{
+		WorkspacesRoot:   envString("WORKSPACES_ROOT", defaultWorkspaceRoot()),
+		DefaultBlockHard: envString("SANDBOX_DEFAULT_BHARD", "100g"),
+		DefaultInodeHard: envString("SANDBOX_DEFAULT_IHARD", "0"),
+		ProjectsFile:     envString("SANDBOX_PROJECTS_FILE", "/etc/projects"),
+		ProjidFile:       envString("SANDBOX_PROJID_FILE", "/etc/projid"),
+	}
+	enableQuotaDefault := runtime.GOOS == "linux"
+	cfg.EnableProjectQuota = envBool("SANDBOX_ENABLE_PROJECT_QUOTA", enableQuotaDefault)
+	return NewManager(cfg)
+}
+
+func NewManager(cfg ManagerConfig) *Manager {
+	if cfg.WorkspacesRoot == "" {
+		cfg.WorkspacesRoot = defaultWorkspaceRoot()
+	}
+	if cfg.DefaultBlockHard == "" {
+		cfg.DefaultBlockHard = "100g"
+	}
+	if cfg.DefaultInodeHard == "" {
+		cfg.DefaultInodeHard = "0"
+	}
+	if cfg.ProjectsFile == "" {
+		cfg.ProjectsFile = "/etc/projects"
+	}
+	if cfg.ProjidFile == "" {
+		cfg.ProjidFile = "/etc/projid"
+	}
+	return &Manager{
+		cfg:    cfg,
+		mounts: make(map[string]*Mount),
+	}
+}
+
+func (m *Manager) mountRecord(name string) *Mount {
+	return &Mount{
+		Name:      name,
+		MergedDir: filepath.Join(m.cfg.WorkspacesRoot, name),
+		MountedAt: time.Now().UTC(),
+	}
+}
+
+func (m *Manager) ensureLock(name string) *sync.Mutex {
+	v, _ := m.ensureMu.LoadOrStore(name, &sync.Mutex{})
+	return v.(*sync.Mutex)
+}
+
+func (m *Manager) Ensure(name string) (string, error) {
+	mu := m.ensureLock(name)
+	mu.Lock()
+	defer mu.Unlock()
+
+	if name == "" {
+		return "", errors.New("workspace name required")
+	}
+
+	m.mu.RLock()
+	existing := m.mounts[name]
+	m.mu.RUnlock()
+	if existing != nil && m.isWorkspaceReady(existing.MergedDir) {
+		return existing.MergedDir, nil
+	}
+
+	mount := m.mountRecord(name)
+	if err := os.MkdirAll(mount.MergedDir, 0o700); err != nil {
+		return "", err
+	}
+	_ = os.Chown(mount.MergedDir, 1001, 1001)
+
+	if err := m.ensureProjectQuota(name, mount.MergedDir); err != nil {
+		return "", err
+	}
+
+	m.mu.Lock()
+	m.mounts[name] = mount
+	m.mu.Unlock()
+
+	return mount.MergedDir, nil
+}
+
+func (m *Manager) Delete(name string) error {
+	mu := m.ensureLock(name)
+	mu.Lock()
+	defer mu.Unlock()
+
+	if name == "" {
+		return errors.New("workspace name required")
+	}
+
+	workspaceDir := filepath.Join(m.cfg.WorkspacesRoot, name)
+	if err := os.RemoveAll(workspaceDir); err != nil {
+		return err
+	}
+
+	m.mu.Lock()
+	delete(m.mounts, name)
+	m.mu.Unlock()
+
+	if err := m.deleteProjectQuota(name); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (m *Manager) isWorkspaceReady(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
+}
+
+func (m *Manager) ensureProjectQuota(workspaceName, workspaceDir string) error {
+	if !m.cfg.EnableProjectQuota {
+		return nil
+	}
+	if runtime.GOOS != "linux" {
+		return nil
+	}
+
+	m.quotaMu.Lock()
+	defer m.quotaMu.Unlock()
+
+	if err := ensureFileExists(m.cfg.ProjectsFile, 0o644); err != nil {
+		return fmt.Errorf("ensure projects file: %w", err)
+	}
+	if err := ensureFileExists(m.cfg.ProjidFile, 0o644); err != nil {
+		return fmt.Errorf("ensure projid file: %w", err)
+	}
+
+	projectName := projectNameForWorkspace(workspaceName)
+	projectIDs, err := readProjidMap(m.cfg.ProjidFile)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", m.cfg.ProjidFile, err)
+	}
+	projectPaths, err := readProjectsMap(m.cfg.ProjectsFile)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", m.cfg.ProjectsFile, err)
+	}
+
+	projectID, ok := projectIDs[projectName]
+	if !ok {
+		projectID = nextProjectID(projectIDs)
+		projectIDs[projectName] = projectID
+	}
+	projectPaths[projectID] = workspaceDir
+
+	if err := writeProjidMap(m.cfg.ProjidFile, projectIDs); err != nil {
+		return fmt.Errorf("write %s: %w", m.cfg.ProjidFile, err)
+	}
+	if err := writeProjectsMap(m.cfg.ProjectsFile, projectPaths); err != nil {
+		return fmt.Errorf("write %s: %w", m.cfg.ProjectsFile, err)
+	}
+
+	if err := runXFSQuota(m.cfg.WorkspacesRoot, fmt.Sprintf("project -s %s", projectName)); err != nil {
+		return fmt.Errorf("project init failed for %s: %w", projectName, err)
+	}
+	if err := runXFSQuota(
+		m.cfg.WorkspacesRoot,
+		fmt.Sprintf("limit -p bhard=%s ihard=%s %s", m.cfg.DefaultBlockHard, m.cfg.DefaultInodeHard, projectName),
+	); err != nil {
+		return fmt.Errorf("project limit failed for %s: %w", projectName, err)
+	}
+
+	return nil
+}
+
+func (m *Manager) deleteProjectQuota(workspaceName string) error {
+	if !m.cfg.EnableProjectQuota {
+		return nil
+	}
+	if runtime.GOOS != "linux" {
+		return nil
+	}
+
+	m.quotaMu.Lock()
+	defer m.quotaMu.Unlock()
+
+	projectIDs, err := readProjidMap(m.cfg.ProjidFile)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("read %s: %w", m.cfg.ProjidFile, err)
+	}
+	projectPaths, err := readProjectsMap(m.cfg.ProjectsFile)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("read %s: %w", m.cfg.ProjectsFile, err)
+	}
+
+	projectName := projectNameForWorkspace(workspaceName)
+	projectID, ok := projectIDs[projectName]
+	if !ok {
+		return nil
+	}
+
+	delete(projectIDs, projectName)
+	delete(projectPaths, projectID)
+
+	if err := writeProjidMap(m.cfg.ProjidFile, projectIDs); err != nil {
+		return fmt.Errorf("write %s: %w", m.cfg.ProjidFile, err)
+	}
+	if err := writeProjectsMap(m.cfg.ProjectsFile, projectPaths); err != nil {
+		return fmt.Errorf("write %s: %w", m.cfg.ProjectsFile, err)
+	}
+
+	return nil
+}
+
+func ensureFileExists(path string, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE, perm)
+	if err != nil {
+		return err
+	}
+	return f.Close()
+}
+
+func projectNameForWorkspace(workspace string) string {
+	trimmed := strings.TrimSpace(strings.ToLower(workspace))
+	if trimmed == "" {
+		return "sb_unknown"
+	}
+	var b strings.Builder
+	b.Grow(len(trimmed) + 3)
+	b.WriteString("sb_")
+	for _, r := range trimmed {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '-' || r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('_')
+		}
+	}
+	return b.String()
+}
+
+func nextProjectID(existing map[string]int) int {
+	maxID := defaultProjectIDStart - 1
+	for _, id := range existing {
+		if id > maxID {
+			maxID = id
+		}
+	}
+	return maxID + 1
+}
+
+func readProjidMap(path string) (map[string]int, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	out := make(map[string]int)
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		name := strings.TrimSpace(parts[0])
+		idRaw := strings.TrimSpace(parts[1])
+		if name == "" || idRaw == "" {
+			continue
+		}
+		id, parseErr := strconv.Atoi(idRaw)
+		if parseErr != nil {
+			continue
+		}
+		out[name] = id
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func readProjectsMap(path string) (map[int]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	out := make(map[int]string)
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		idRaw := strings.TrimSpace(parts[0])
+		pathValue := strings.TrimSpace(parts[1])
+		if idRaw == "" || pathValue == "" {
+			continue
+		}
+		id, parseErr := strconv.Atoi(idRaw)
+		if parseErr != nil {
+			continue
+		}
+		out[id] = pathValue
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func writeProjidMap(path string, values map[string]int) error {
+	names := make([]string, 0, len(values))
+	for name := range values {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	lines := make([]string, 0, len(names))
+	for _, name := range names {
+		lines = append(lines, fmt.Sprintf("%s:%d", name, values[name]))
+	}
+	return writeLinesAtomic(path, lines)
+}
+
+func writeProjectsMap(path string, values map[int]string) error {
+	ids := make([]int, 0, len(values))
+	for id := range values {
+		ids = append(ids, id)
+	}
+	sort.Ints(ids)
+
+	lines := make([]string, 0, len(ids))
+	for _, id := range ids {
+		lines = append(lines, fmt.Sprintf("%d:%s", id, values[id]))
+	}
+	return writeLinesAtomic(path, lines)
+}
+
+func writeLinesAtomic(path string, lines []string) error {
+	dir := filepath.Dir(path)
+	tmpFile, err := os.CreateTemp(dir, ".tmp-quota-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmpFile.Name()
+
+	defer func() {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpPath)
+	}()
+
+	for _, line := range lines {
+		if _, err := tmpFile.WriteString(line + "\n"); err != nil {
+			return err
+		}
+	}
+	if err := tmpFile.Sync(); err != nil {
+		return err
+	}
+	if err := tmpFile.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpPath, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
+}
+
+func runXFSQuota(mountRoot, command string) error {
+	cmd := exec.Command("xfs_quota", "-x", "-c", command, mountRoot)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("xfs_quota -x -c %q %s failed: %w: %s", command, mountRoot, err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+func envString(key, fallback string) string {
+	if value, ok := os.LookupEnv(key); ok {
+		return value
+	}
+	return fallback
+}
+
+func envBool(key string, fallback bool) bool {
+	raw, ok := os.LookupEnv(key)
+	if !ok {
+		return fallback
+	}
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "1", "true", "yes", "y", "on":
+		return true
+	case "0", "false", "no", "n", "off":
+		return false
+	default:
+		return fallback
+	}
+}
+
+func defaultLocalRoot() string {
+	wd, err := os.Getwd()
+	if err != nil || wd == "" {
+		return ".sandbox-host"
+	}
+	return filepath.Join(wd, ".sandbox-host")
+}
+
+func defaultWorkspaceRoot() string {
+	if runtime.GOOS == "linux" {
+		return "/srv/sandboxes"
+	}
+	return filepath.Join(defaultLocalRoot(), "workspaces")
+}

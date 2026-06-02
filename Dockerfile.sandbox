@@ -1,0 +1,106 @@
+FROM golang:1.25-bookworm AS goofys-builder
+
+RUN set -eux; \
+    export PATH="/usr/local/go/bin:$PATH"; \
+    export GO111MODULE=off CGO_ENABLED=0 GOPATH=/go; \
+    mkdir -p /go/src/github.com/kahing; \
+    git clone --depth 1 --branch v0.24.0 --recurse-submodules --shallow-submodules https://github.com/kahing/goofys /go/src/github.com/kahing/goofys; \
+    cd /go/src/github.com/kahing/goofys; \
+    go build -o /usr/local/bin/goofys; \
+    /usr/local/bin/goofys --version
+
+FROM ubuntu:24.04
+
+# Core tools
+RUN apt-get update -qq && \
+    apt-get install -y -qq curl git ca-certificates unzip jq imagemagick poppler-utils tini fuse3 ripgrep fd-find >/dev/null 2>&1 && \
+    if ! command -v magick >/dev/null 2>&1 && command -v convert >/dev/null 2>&1; then \
+      printf '#!/bin/sh\nexec convert "$@"\n' > /usr/local/bin/magick && \
+      chmod +x /usr/local/bin/magick; \
+    fi && \
+    command -v magick >/dev/null 2>&1 && \
+    rm -rf /var/lib/apt/lists/*
+
+# R2 FUSE mounts are performed inside the sandbox with prefix-scoped temporary
+# credentials provided by sandbox-host.
+COPY --from=goofys-builder /usr/local/bin/goofys /usr/local/bin/goofys
+RUN set -eux; \
+    /usr/local/bin/goofys --version; \
+    if ! grep -q '^user_allow_other$' /etc/fuse.conf; then echo user_allow_other >> /etc/fuse.conf; fi
+
+# Create claude user (uid 1001)
+RUN useradd -m -u 1001 -s /bin/bash claude
+
+# Bun
+RUN curl -fsSL https://bun.sh/install | bash && \
+    mv /root/.bun/bin/bun /usr/local/bin/bun && \
+    ln -s /usr/local/bin/bun /usr/local/bin/bunx
+
+# Node.js 22
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - >/dev/null 2>&1 && \
+    apt-get install -y -qq nodejs >/dev/null 2>&1 && \
+    rm -rf /var/lib/apt/lists/*
+
+# uv (Python package manager)
+RUN curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin sh 2>/dev/null
+
+# Python 3.13 (managed by uv)
+ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python
+RUN uv python install 3.13 && \
+    ln -sf $(uv python find 3.13) /usr/local/bin/python && \
+    ln -sf $(uv python find 3.13) /usr/local/bin/python3
+
+# Runtime defaults: persistent workspace cache + fast linking into .venv.
+ENV UV_CACHE_DIR=/home/claude/.cache/uv
+ENV UV_LINK_MODE=hardlink
+
+# Wrangler CLI (npm puts binaries in /usr/local/bin/ — accessible to all users)
+RUN npm install -g wrangler --loglevel=warn
+
+# Directories (R2 credentials are bind-mounted from host; R2 prefixes mount in-container)
+RUN mkdir -p /opt/chiridion /opt/chiridion-host-pi/skills /usr/local/lib/create-worker \
+    /run/chiridion-r2 \
+    /mnt/user-uploads /mnt/user-outputs && \
+    chmod 0700 /run/chiridion-r2 && \
+    chown 1001:1001 /mnt/user-uploads /mnt/user-outputs
+
+# Playwright runtime support for generated apps and tests.
+RUN cd /opt/chiridion && \
+    echo '{"name":"chiridion-sandbox-runner","private":true,"type":"module"}' > package.json && \
+    bun install --no-progress playwright@1.58.2
+
+# Playwright: install Chromium system deps + browser binary.
+# PLAYWRIGHT_BROWSERS_PATH keeps the browser outside /home/claude (bind-mounted at runtime).
+# Agent projects get playwright via the starter template devDependency.
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
+RUN cd /opt/chiridion && npx playwright install-deps chromium && \
+    npx playwright install chromium && \
+    rm -rf /var/lib/apt/lists/* && \
+    chmod -R o+rx /opt/playwright-browsers
+
+# Copy sandbox files
+COPY sandbox/entrypoint.sh /opt/chiridion/entrypoint.sh
+COPY sandbox/skills/ /opt/chiridion-host-pi/skills/
+COPY sandbox/create-worker/ /usr/local/lib/create-worker/
+RUN chmod +x /opt/chiridion/entrypoint.sh && \
+    chmod +x /usr/local/lib/create-worker/create-worker.mjs && \
+    chmod +x /usr/local/lib/create-worker/publish.mjs && \
+    ln -sf /usr/local/lib/create-worker/create-worker.mjs /usr/local/bin/create-worker && \
+    ln -sf /usr/local/lib/create-worker/publish.mjs /usr/local/bin/publish
+COPY sandbox/validate-notebook.py /usr/local/bin/validate-notebook
+RUN chmod +x /usr/local/bin/validate-notebook
+
+# IPython startup defaults (pandas display settings for notebook HTML output).
+# IPYTHONDIR must live outside /home/claude — that path is a bind-mounted
+# volume, so files COPY'd there at build time are shadowed at runtime.
+ENV IPYTHONDIR=/opt/ipython
+COPY sandbox/ipython-startup/ /opt/ipython/profile_default/startup/
+RUN chown -R claude:claude /opt/ipython
+
+WORKDIR /home/claude
+
+EXPOSE 8080
+# Run under tini so Chromium/Playwright child processes are reaped correctly.
+ENTRYPOINT ["/usr/bin/tini", "--"]
+# Entrypoint script still runs as root to drop privileges to claude user.
+CMD ["/opt/chiridion/entrypoint.sh"]
