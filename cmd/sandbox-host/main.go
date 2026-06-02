@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"log"
 	"net/http"
@@ -44,6 +46,11 @@ func main() {
 		IdleTimeout:       cfg.IdleTimeout,
 		WriteTimeout:      cfg.WriteTimeout,
 	}
+	if tlsConfig, err := controlTLSConfig(cfg); err != nil {
+		log.Fatalf("control TLS configuration failed: %v", err)
+	} else if tlsConfig != nil {
+		httpServer.TLSConfig = tlsConfig
+	}
 	dockerProxyServer := &http.Server{
 		Addr:              cfg.DockerProxyListenAddr,
 		Handler:           server.DockerProxyHandler(),
@@ -57,7 +64,13 @@ func main() {
 
 	log.Printf("[SandboxHost] control listener on %s", cfg.ListenAddr)
 	go func() {
-		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		var err error
+		if httpServer.TLSConfig != nil {
+			err = httpServer.ListenAndServeTLS(cfg.TLSCertFile, cfg.TLSKeyFile)
+		} else {
+			err = httpServer.ListenAndServe()
+		}
+		if err != nil && err != http.ErrServerClosed {
 			errCh <- fmt.Errorf("control listener failed: %w", err)
 		}
 	}()
@@ -91,4 +104,30 @@ func main() {
 	case <-shutdownDone:
 		log.Printf("[SandboxHost] shutdown complete")
 	}
+}
+
+func controlTLSConfig(cfg app.Config) (*tls.Config, error) {
+	if cfg.TLSCertFile == "" && cfg.TLSKeyFile == "" && cfg.TLSClientCAFile == "" {
+		return nil, nil
+	}
+	if cfg.TLSCertFile == "" || cfg.TLSKeyFile == "" {
+		return nil, fmt.Errorf("CONTROL_PLANE_TLS_CERT_FILE and CONTROL_PLANE_TLS_KEY_FILE are both required when TLS is enabled")
+	}
+
+	tlsConfig := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+	}
+	if cfg.TLSClientCAFile != "" {
+		pemBytes, err := os.ReadFile(cfg.TLSClientCAFile)
+		if err != nil {
+			return nil, fmt.Errorf("read client CA file: %w", err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pemBytes) {
+			return nil, fmt.Errorf("client CA file did not contain any PEM certificates")
+		}
+		tlsConfig.ClientCAs = pool
+		tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
+	}
+	return tlsConfig, nil
 }

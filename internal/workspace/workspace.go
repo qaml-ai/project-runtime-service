@@ -15,6 +15,8 @@ import (
 	"time"
 )
 
+var ErrReflinkCloneUnavailable = errors.New("reflink clone unavailable")
+
 type ManagerConfig struct {
 	WorkspacesRoot     string
 	EnableProjectQuota bool
@@ -119,6 +121,75 @@ func (m *Manager) Ensure(name string) (string, error) {
 	m.mu.Unlock()
 
 	return mount.MergedDir, nil
+}
+
+func (m *Manager) Root() string {
+	return m.cfg.WorkspacesRoot
+}
+
+func (m *Manager) CloneReflink(sourceName, targetName string) error {
+	if strings.TrimSpace(sourceName) == "" || strings.TrimSpace(targetName) == "" {
+		return errors.New("source and target workspace names required")
+	}
+	if sourceName == targetName {
+		return errors.New("source and target workspace names must differ")
+	}
+	if runtime.GOOS != "linux" {
+		return fmt.Errorf("%w: linux/XFS host required", ErrReflinkCloneUnavailable)
+	}
+
+	firstName, secondName := sourceName, targetName
+	if secondName < firstName {
+		firstName, secondName = secondName, firstName
+	}
+	firstMu := m.ensureLock(firstName)
+	secondMu := m.ensureLock(secondName)
+	firstMu.Lock()
+	defer firstMu.Unlock()
+	secondMu.Lock()
+	defer secondMu.Unlock()
+
+	sourceDir := filepath.Join(m.cfg.WorkspacesRoot, sourceName)
+	targetDir := filepath.Join(m.cfg.WorkspacesRoot, targetName)
+	targetTmp := filepath.Join(m.cfg.WorkspacesRoot, "."+targetName+".clone-"+strconv.FormatInt(time.Now().UnixNano(), 10))
+
+	info, err := os.Stat(sourceDir)
+	if err != nil {
+		return fmt.Errorf("stat source workspace: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("source workspace is not a directory")
+	}
+	if _, err := os.Stat(targetDir); err == nil {
+		return fmt.Errorf("target workspace already exists")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("stat target workspace: %w", err)
+	}
+
+	if err := os.MkdirAll(targetTmp, 0o700); err != nil {
+		return fmt.Errorf("create target temp workspace: %w", err)
+	}
+	defer func() {
+		_ = os.RemoveAll(targetTmp)
+	}()
+
+	if err := runCommand("sync"); err != nil {
+		return fmt.Errorf("sync source workspace before clone: %w", err)
+	}
+	if err := runCommand("cp", "-a", "--reflink=always", sourceDir+"/.", targetTmp+"/"); err != nil {
+		return fmt.Errorf("%w: %v", ErrReflinkCloneUnavailable, err)
+	}
+	if err := os.Rename(targetTmp, targetDir); err != nil {
+		return fmt.Errorf("publish target clone: %w", err)
+	}
+	if err := m.ensureProjectQuota(targetName, targetDir); err != nil {
+		return err
+	}
+
+	m.mu.Lock()
+	m.mounts[targetName] = m.mountRecord(targetName)
+	m.mu.Unlock()
+	return nil
 }
 
 func (m *Manager) Delete(name string) error {
@@ -429,6 +500,15 @@ func runXFSQuota(mountRoot, command string) error {
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("xfs_quota -x -c %q %s failed: %w: %s", command, mountRoot, err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+func runCommand(name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s %s failed: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(output)))
 	}
 	return nil
 }

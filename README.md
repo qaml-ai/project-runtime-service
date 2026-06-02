@@ -15,9 +15,14 @@ used by other agent products.
 - Host-side file operations
 - Container exec API
 - XFS project quota support
+- Project-shaped control API
+- Fast reflink clone API on Linux/XFS
+- Local tar.gz backups with retention and guarded restore
+- Optional bearer or mTLS control-plane authentication
+- Generic outbound HTTP proxy capabilities
 - R2/S3-style mounted upload/output prefixes
 - SQL data proxy sidecar
-- Internal HTTP proxy hooks for app/platform APIs
+- Compatibility HTTP proxy hooks for app/platform APIs
 - Usage accounting storage
 
 ## Target direction
@@ -28,17 +33,28 @@ The intended service boundary is:
 - Project Runtime Service owns containers, project disks, quotas, backups, clone, file ops,
   exec, stop/start, disk growth, and project-scoped outbound capabilities.
 
-Future project APIs should be generic and product-neutral:
+The project API is generic and product-neutral:
 
 ```text
 GET  /v1/host/capabilities
+GET  /v1/host/stats
+GET  /v1/projects/:id
 POST /v1/projects/:id/ensure
 POST /v1/projects/:id/exec
-GET  /v1/projects/:id/files/*
-PUT  /v1/projects/:id/files/*
+GET  /v1/projects/:id/fs/read
+PUT  /v1/projects/:id/fs/write
+GET  /v1/projects/:id/fs/list
+DELETE /v1/projects/:id/fs/delete
+POST /v1/projects/:id/fs/move
+POST /v1/projects/:id/fs/mkdir
+GET  /v1/projects/:id/fs/exists
 POST /v1/projects/:id/clone
-POST /v1/projects/:id/stop
-POST /v1/projects/:id/proxies
+POST /v1/projects/:id/terminate
+GET  /v1/projects/:id/backups
+POST /v1/projects/:id/backups
+POST /v1/projects/:id/restore
+GET  /v1/projects/:id/proxies
+DELETE /v1/projects/:id
 ANY  /p/:capability/*
 ```
 
@@ -76,6 +92,30 @@ mv /srv/sandboxes/target.tmp /srv/sandboxes/target
 - `SANDBOX_DOCKER_PROXY_PORT` defaults to `8081`. This is the docker-facing app API proxy listener.
 - `DATA_PROXY_PORT` defaults to `8090`. This is the localhost SQL data-proxy sidecar.
 
+## Control-plane authentication
+
+By default the control listener is unauthenticated, which is only appropriate for local
+development or private networks.
+
+Bearer auth:
+
+```bash
+CONTROL_PLANE_AUTH_TYPE=bearer
+CONTROL_PLANE_BEARER_TOKEN=...
+```
+
+mTLS auth:
+
+```bash
+CONTROL_PLANE_AUTH_TYPE=mtls
+CONTROL_PLANE_TLS_CERT_FILE=/etc/project-runtime/server.crt
+CONTROL_PLANE_TLS_KEY_FILE=/etc/project-runtime/server.key
+CONTROL_PLANE_TLS_CLIENT_CA_FILE=/etc/project-runtime/client-ca.crt
+```
+
+Setting TLS files makes the control listener serve HTTPS. When a client CA file is configured,
+the listener requires and verifies client certificates.
+
 ## Local development
 
 Requires Go 1.24+ and Docker.
@@ -105,7 +145,7 @@ compatibility details and should be renamed as the extracted service API stabili
 
 ## Generic outbound capabilities
 
-The planned proxy model is inspired by exe.dev integrations: expose named internal network
+The proxy model is inspired by exe.dev integrations: expose named internal network
 capabilities to project containers, attach them by project/tag/policy, and inject credentials
 outside the user-controlled sandbox.
 
@@ -113,20 +153,43 @@ The sandbox should receive a local capability URL, not provider secrets. The run
 should strip spoofable identity headers, resolve the caller project from the container/runtime
 identity, inject authoritative headers, and forward the request using a configured auth plugin.
 
-Example capability definition:
+Capabilities are configured with `PROJECT_RUNTIME_PROXY_CAPABILITIES_JSON` or
+`PROJECT_RUNTIME_PROXY_CAPABILITIES_FILE`:
 
 ```json
 {
-  "id": "artifacts-main",
-  "targetBaseUrl": "https://artifacts.cloudflare.net",
-  "allowedHosts": ["artifacts.cloudflare.net", "*.artifacts.cloudflare.net"],
-  "allowedMethods": ["GET", "POST", "PUT", "PATCH", "DELETE"],
-  "auth": {
-    "type": "bearer",
-    "credentialRef": "workspace.cloudflare_artifacts_token"
-  }
+  "capabilities": [
+    {
+      "name": "artifacts-main",
+      "target": "https://artifacts.example.com",
+      "bearerToken": "host-held-token",
+      "headers": {
+        "X-Integration": "artifacts"
+      },
+      "allowedProjects": ["project-pizza-delivery", "pizza-delivery"]
+    }
+  ]
 }
 ```
+
+Containers call the docker-facing proxy listener with `/p/:capability/*`. The host injects
+configured credentials and authoritative `X-Project-Runtime-*` identity headers.
+
+## Backups
+
+Local backups are stored under `PROJECT_RUNTIME_BACKUP_ROOT`, defaulting to
+`/srv/sandboxes/.project-runtime/backups` on Linux. Retention defaults to the last 5 backups
+per project and can be changed with `PROJECT_RUNTIME_BACKUP_RETENTION`.
+
+Restore extracts the selected archive into a temporary directory first. The current project
+directory is only moved aside after extraction succeeds, so a failed restore cannot replace a
+valid project with an empty or partially extracted filesystem.
+
+## Disk headroom
+
+`/v1/host/stats` reports total/free bytes and whether the host is above the configured reserve.
+`PROJECT_RUNTIME_DISK_RESERVE_BYTES` defaults to 20 GiB. Project ensure, file mutations, clone,
+and backup creation return HTTP 507 when the host drops below that reserve.
 
 ## License
 

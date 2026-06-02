@@ -40,7 +40,8 @@ type Server struct {
 	fs         *fsops.Manager
 	usage      *state.UsageStore
 
-	httpClient *http.Client
+	httpClient        *http.Client
+	proxyCapabilities map[string]ProxyCapability
 }
 
 func NewServer(cfg Config, containers *container.Manager, workspaces *workspace.Manager, fsManager *fsops.Manager, usageStore *state.UsageStore) *Server {
@@ -57,12 +58,13 @@ func NewServer(cfg Config, containers *container.Manager, workspaces *workspace.
 	}
 
 	s := &Server{
-		cfg:        cfg,
-		containers: containers,
-		workspaces: workspaces,
-		fs:         fsManager,
-		usage:      usageStore,
-		httpClient: &http.Client{Transport: transport},
+		cfg:               cfg,
+		containers:        containers,
+		workspaces:        workspaces,
+		fs:                fsManager,
+		usage:             usageStore,
+		httpClient:        &http.Client{Transport: transport},
+		proxyCapabilities: loadProxyCapabilities(cfg),
 	}
 
 	return s
@@ -87,6 +89,27 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	if req.URL.Path == "/health" {
 		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "service": "sandbox-host"})
+		return
+	}
+
+	if s.rejectUnauthenticatedControlRequest(w, req) {
+		return
+	}
+
+	if req.URL.Path == "/v1/host/capabilities" && req.Method == http.MethodGet {
+		s.handleHostCapabilities(w, req)
+		return
+	}
+	if req.URL.Path == "/v1/host/stats" && req.Method == http.MethodGet {
+		s.handleHostStats(w, req)
+		return
+	}
+
+	if strings.HasPrefix(req.URL.Path, "/v1/projects/") {
+		if err := s.handleProjectRoute(w, req); err != nil {
+			log.Printf("[SandboxHost] project request error: %v", err)
+			errorJSON(w, fmt.Sprintf("Internal error: %v", err), http.StatusInternalServerError)
+		}
 		return
 	}
 
@@ -131,6 +154,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 func (s *Server) serveDockerProxy(w http.ResponseWriter, req *http.Request) {
 	sourceIP := requestSourceIP(req)
+	if strings.HasPrefix(req.URL.Path, "/p/") {
+		if err := s.forwardGenericProxyRequest(w, req, sourceIP); err != nil {
+			log.Printf("[SandboxHost] generic proxy request error: %v", err)
+			errorJSON(w, fmt.Sprintf("Internal error: %v", err), http.StatusInternalServerError)
+		}
+		return
+	}
+
 	route, ok := parseWorkspaceRoute(req.URL.Path)
 	if !ok || !isCloudflareAPIProxyRoute(route.Subpath) {
 		errorJSON(w, "Not found", http.StatusNotFound)

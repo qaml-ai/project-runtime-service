@@ -22,18 +22,28 @@ The runtime service should keep runtime state:
 
 ## Runtime backend contract
 
-The host should eventually expose a project-oriented API:
+The host exposes project-oriented APIs while keeping legacy workspace routes during migration:
 
 ```text
 GET  /v1/host/capabilities
+GET  /v1/host/stats
+GET  /v1/projects/:id
 POST /v1/projects/:id/ensure
 POST /v1/projects/:id/exec
-GET  /v1/projects/:id/files/*
-PUT  /v1/projects/:id/files/*
+GET  /v1/projects/:id/fs/read
+PUT  /v1/projects/:id/fs/write
+GET  /v1/projects/:id/fs/list
+DELETE /v1/projects/:id/fs/delete
+POST /v1/projects/:id/fs/move
+POST /v1/projects/:id/fs/mkdir
+GET  /v1/projects/:id/fs/exists
 POST /v1/projects/:id/clone
-POST /v1/projects/:id/stop
+POST /v1/projects/:id/terminate
 DELETE /v1/projects/:id
-POST /v1/projects/:id/proxies
+GET  /v1/projects/:id/backups
+POST /v1/projects/:id/backups
+POST /v1/projects/:id/restore
+GET  /v1/projects/:id/proxies
 ANY  /p/:capability/*
 ```
 
@@ -48,7 +58,7 @@ Fast clone should:
 1. Lock source and target.
 2. Ensure the source project exists.
 3. Reject if the target exists.
-4. Pause or stop the source container briefly.
+4. Stop the source container briefly.
 5. Run `sync`.
 6. Copy with `cp -a --reflink=always`.
 7. Apply target project quota.
@@ -71,17 +81,21 @@ The proxy design follows the same broad pattern as exe.dev integrations:
 The sandbox should never receive the upstream credential. It receives only the ability to use
 an attached capability.
 
+Capabilities are loaded from `PROJECT_RUNTIME_PROXY_CAPABILITIES_JSON` or
+`PROJECT_RUNTIME_PROXY_CAPABILITIES_FILE`.
+
 Example:
 
 ```json
 {
-  "id": "github-repo",
-  "targetBaseUrl": "https://github.com/qaml-ai/example",
-  "allowedHosts": ["github.com"],
-  "auth": {
-    "type": "basic",
-    "credentialRef": "workspace.github_app_token"
-  }
+  "capabilities": [
+    {
+      "name": "github-repo",
+      "target": "https://github.com/qaml-ai/example",
+      "bearerToken": "host-held-token",
+      "allowedProjects": ["project-example", "example"]
+    }
+  ]
 }
 ```
 
@@ -102,18 +116,36 @@ For multi-host or customer-managed deployments, support mTLS as a stronger optio
 
 The auth interface should be configurable:
 
-```toml
-[control_plane.auth]
-type = "bearer"
-token_file = "/etc/project-runtime/control-plane-token"
+```bash
+CONTROL_PLANE_AUTH_TYPE=bearer
+CONTROL_PLANE_BEARER_TOKEN=...
 ```
 
 or:
 
-```toml
-[control_plane.auth]
-type = "mtls"
-client_cert = "/etc/project-runtime/client.crt"
-client_key = "/etc/project-runtime/client.key"
-ca_cert = "/etc/project-runtime/ca.crt"
+```bash
+CONTROL_PLANE_AUTH_TYPE=mtls
+CONTROL_PLANE_TLS_CERT_FILE=/etc/project-runtime/server.crt
+CONTROL_PLANE_TLS_KEY_FILE=/etc/project-runtime/server.key
+CONTROL_PLANE_TLS_CLIENT_CA_FILE=/etc/project-runtime/client-ca.crt
 ```
+
+## Data-loss guardrails
+
+Backups are written as local tar.gz archives under `PROJECT_RUNTIME_BACKUP_ROOT`, with retention
+controlled by `PROJECT_RUNTIME_BACKUP_RETENTION`.
+
+Restore extracts into a temporary directory and only swaps the current project out after the
+archive has been fully read. If extraction fails, the existing project remains in place and the
+project does not start with an accidentally empty filesystem.
+
+The host also enforces a configurable free-space reserve. `PROJECT_RUNTIME_DISK_RESERVE_BYTES`
+defaults to 20 GiB, `/v1/host/stats` reports current headroom, and project creation/mutations,
+clone, and backup creation fail with HTTP 507 below the reserve.
+
+## Remaining future work
+
+- provider-specific disk auto-grow
+- external/object-storage backup backends
+- richer capability auth plugins beyond static bearer/header injection
+- product-neutral setup script and systemd unit names
