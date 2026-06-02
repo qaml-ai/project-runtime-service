@@ -17,7 +17,8 @@ used by other agent products.
 - XFS project quota support
 - Project-shaped control API
 - Fast reflink clone API on Linux/XFS
-- Local tar.gz backups with retention and guarded restore
+- Local or S3-compatible tar.gz backups with retention and guarded restore
+- Optional S3-compatible project archival to move inactive project files off local disk
 - Optional bearer or mTLS control-plane authentication
 - Generic outbound HTTP proxy capabilities
 - R2/S3-style mounted upload/output prefixes
@@ -53,6 +54,9 @@ POST /v1/projects/:id/terminate
 GET  /v1/projects/:id/backups
 POST /v1/projects/:id/backups
 POST /v1/projects/:id/restore
+GET  /v1/projects/:id/storage
+POST /v1/projects/:id/archive
+POST /v1/projects/:id/unarchive
 GET  /v1/projects/:id/proxies
 DELETE /v1/projects/:id
 ANY  /p/:capability/*
@@ -182,13 +186,55 @@ injects authoritative project identity headers.
 
 ## Backups
 
-Local backups are stored under `PROJECT_RUNTIME_BACKUP_ROOT`, defaulting to
-`/srv/sandboxes/.project-runtime/backups` on Linux. Retention defaults to the last 5 backups
-per project and can be changed with `PROJECT_RUNTIME_BACKUP_RETENTION`.
+Backups are recovery points. By default they are local tar.gz files stored under
+`PROJECT_RUNTIME_BACKUP_ROOT`, which defaults to `/srv/sandboxes/.project-runtime/backups`
+on Linux. Retention defaults to the last 5 backups per project and can be changed with
+`PROJECT_RUNTIME_BACKUP_RETENTION`.
+
+Set `PROJECT_RUNTIME_BACKUP_STORE=object` to store backup archives in S3-compatible object
+storage instead. R2 works with this path.
 
 Restore extracts the selected archive into a temporary directory first. The current project
 directory is only moved aside after extraction succeeds, so a failed restore cannot replace a
 valid project with an empty or partially extracted filesystem.
+
+## Project archival
+
+Project archival is separate from backups. It moves the current project filesystem out of
+local hot storage after the container is stopped:
+
+```text
+local -> archiving -> archived -> restoring -> local
+                    -> error
+```
+
+Use `POST /v1/projects/:id/archive` to upload the current project filesystem to object
+storage, verify the upload metadata, and then remove the local project directory. Use
+`POST /v1/projects/:id/unarchive` to restore it. Hot-path project operations such as
+`ensure`, `exec`, `fs/*`, `clone`, and backup creation automatically unarchive before
+continuing. If an archive restore fails, the project enters `error` and the service does
+not create a fresh empty project.
+
+Archives require `PROJECT_RUNTIME_ARCHIVE_STORE=object` and object storage config. Retention
+defaults to the last 2 archive generations per project and can be changed with
+`PROJECT_RUNTIME_ARCHIVE_RETENTION`.
+
+Set `PROJECT_RUNTIME_ARCHIVE_AFTER_SECS` to a positive value to enable the background
+inactivity sweeper. The sweep interval defaults to 300 seconds and can be changed with
+`PROJECT_RUNTIME_ARCHIVE_SWEEP_SECS`.
+
+S3-compatible object storage config:
+
+```text
+PROJECT_RUNTIME_OBJECT_STORE=s3
+PROJECT_RUNTIME_OBJECT_BUCKET=...
+PROJECT_RUNTIME_OBJECT_PREFIX=project-runtime
+PROJECT_RUNTIME_OBJECT_ENDPOINT=https://<account>.r2.cloudflarestorage.com
+PROJECT_RUNTIME_OBJECT_REGION=auto
+PROJECT_RUNTIME_OBJECT_ACCESS_KEY_ID=...
+PROJECT_RUNTIME_OBJECT_SECRET_ACCESS_KEY=...
+PROJECT_RUNTIME_OBJECT_PATH_STYLE=true
+```
 
 ## Disk headroom
 

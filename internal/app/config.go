@@ -20,9 +20,23 @@ type Config struct {
 	TLSClientCAFile       string
 	HostPiSessionRoot     string
 	UsageDBRoot           string
+	ProjectStateRoot      string
 	BackupRoot            string
+	BackupStore           string
 	BackupRetention       int
 	DiskReserveBytes      int64
+	ArchiveStore          string
+	ArchiveRetention      int
+	ArchiveAfter          time.Duration
+	ArchiveSweepInterval  time.Duration
+	ObjectStoreType       string
+	ObjectStoreBucket     string
+	ObjectStorePrefix     string
+	ObjectStoreEndpoint   string
+	ObjectStoreRegion     string
+	ObjectStoreAccessKey  string
+	ObjectStoreSecretKey  string
+	ObjectStorePathStyle  bool
 	ProxyCapabilitiesJSON string
 	ProxyCapabilitiesFile string
 	DataProxyUpstreamURL  string
@@ -61,9 +75,23 @@ func LoadConfig() Config {
 		TLSClientCAFile:       envString("CONTROL_PLANE_TLS_CLIENT_CA_FILE", ""),
 		HostPiSessionRoot:     envString("HOST_PI_SESSION_ROOT", defaultHostPiSessionRoot()),
 		UsageDBRoot:           envString("SANDBOX_HOST_USAGE_DB_DIR", defaultUsageDBRoot()),
+		ProjectStateRoot:      envString("PROJECT_RUNTIME_STATE_ROOT", defaultProjectStateRoot()),
 		BackupRoot:            envString("PROJECT_RUNTIME_BACKUP_ROOT", defaultBackupRoot()),
+		BackupStore:           envString("PROJECT_RUNTIME_BACKUP_STORE", "local"),
 		BackupRetention:       maxInt(1, envInt("PROJECT_RUNTIME_BACKUP_RETENTION", 5)),
 		DiskReserveBytes:      envInt64("PROJECT_RUNTIME_DISK_RESERVE_BYTES", 20*1024*1024*1024),
+		ArchiveStore:          envString("PROJECT_RUNTIME_ARCHIVE_STORE", "object"),
+		ArchiveRetention:      maxInt(1, envInt("PROJECT_RUNTIME_ARCHIVE_RETENTION", 2)),
+		ArchiveAfter:          time.Duration(envInt("PROJECT_RUNTIME_ARCHIVE_AFTER_SECS", 0)) * time.Second,
+		ArchiveSweepInterval:  time.Duration(maxInt(60, envInt("PROJECT_RUNTIME_ARCHIVE_SWEEP_SECS", 300))) * time.Second,
+		ObjectStoreType:       envString("PROJECT_RUNTIME_OBJECT_STORE", ""),
+		ObjectStoreBucket:     envString("PROJECT_RUNTIME_OBJECT_BUCKET", ""),
+		ObjectStorePrefix:     envString("PROJECT_RUNTIME_OBJECT_PREFIX", "project-runtime"),
+		ObjectStoreEndpoint:   envString("PROJECT_RUNTIME_OBJECT_ENDPOINT", ""),
+		ObjectStoreRegion:     envString("PROJECT_RUNTIME_OBJECT_REGION", "auto"),
+		ObjectStoreAccessKey:  envString("PROJECT_RUNTIME_OBJECT_ACCESS_KEY_ID", ""),
+		ObjectStoreSecretKey:  envString("PROJECT_RUNTIME_OBJECT_SECRET_ACCESS_KEY", ""),
+		ObjectStorePathStyle:  envBool("PROJECT_RUNTIME_OBJECT_PATH_STYLE", true),
 		ProxyCapabilitiesJSON: envString("PROJECT_RUNTIME_PROXY_CAPABILITIES_JSON", ""),
 		ProxyCapabilitiesFile: envString("PROJECT_RUNTIME_PROXY_CAPABILITIES_FILE", ""),
 		DataProxyUpstreamURL:  envString("DATA_PROXY_UPSTREAM_URL", "http://127.0.0.1:"+strconv.Itoa(dataProxyPort)),
@@ -135,6 +163,17 @@ func defaultBackupRoot() string {
 	return filepath.Join(wd, ".project-runtime", "backups")
 }
 
+func defaultProjectStateRoot() string {
+	if runtime.GOOS == "linux" {
+		return "/srv/sandboxes/.project-runtime/state"
+	}
+	wd, err := os.Getwd()
+	if err != nil || wd == "" {
+		return ".project-runtime/state"
+	}
+	return filepath.Join(wd, ".project-runtime", "state")
+}
+
 func defaultHostPiSessionRoot() string {
 	if runtime.GOOS == "linux" {
 		return "/srv/sandboxes/.sandbox-host/pi-sessions"
@@ -175,6 +214,21 @@ func envInt64(key string, fallback int64) int64 {
 		return fallback
 	}
 	return parsed
+}
+
+func envBool(key string, fallback bool) bool {
+	raw := envString(key, "")
+	if raw == "" {
+		return fallback
+	}
+	switch raw {
+	case "1", "true", "TRUE", "yes", "YES", "on", "ON":
+		return true
+	case "0", "false", "FALSE", "no", "NO", "off", "OFF":
+		return false
+	default:
+		return fallback
+	}
 }
 
 func maxInt(a, b int) int {

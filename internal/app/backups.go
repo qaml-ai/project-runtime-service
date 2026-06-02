@@ -3,6 +3,7 @@ package app
 import (
 	"archive/tar"
 	"compress/gzip"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -16,7 +17,9 @@ import (
 
 type backupInfo struct {
 	Name      string `json:"name"`
-	Path      string `json:"path"`
+	Path      string `json:"path,omitempty"`
+	Key       string `json:"key,omitempty"`
+	Store     string `json:"store"`
 	Size      int64  `json:"size"`
 	CreatedAt string `json:"createdAt"`
 	ProjectID string `json:"projectId"`
@@ -70,7 +73,7 @@ func (s *Server) handleProjectRestore(w http.ResponseWriter, req *http.Request, 
 		errorJSON(w, "backupName required", http.StatusBadRequest)
 		return nil
 	}
-	backupPath, err := s.resolveBackupPath(route, backupName)
+	backup, err := s.resolveBackup(route, backupName)
 	if err != nil {
 		errorJSON(w, err.Error(), http.StatusBadRequest)
 		return nil
@@ -80,7 +83,7 @@ func (s *Server) handleProjectRestore(w http.ResponseWriter, req *http.Request, 
 	if _, err := s.containers.TerminateContainer(route.Name, "project_restore_quiesce"); err != nil {
 		return err
 	}
-	if err := s.restoreBackup(route, backupPath); err != nil {
+	if err := s.restoreBackup(route, backup); err != nil {
 		return err
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -105,23 +108,59 @@ func (s *Server) createBackup(route ProjectRoute) (backupInfo, error) {
 		return backupInfo{}, err
 	}
 	name := time.Now().UTC().Format("20060102T150405.000000000Z") + ".tar.gz"
-	path := filepath.Join(projectBackupDir, name)
-	tmpPath := path + ".tmp"
+	tmpPath := filepath.Join(projectBackupDir, name+".tmp")
 	if err := writeTarGz(sourceDir, tmpPath); err != nil {
 		_ = os.Remove(tmpPath)
 		return backupInfo{}, err
 	}
+	stat, err := os.Stat(tmpPath)
+	if err != nil {
+		_ = os.Remove(tmpPath)
+		return backupInfo{}, err
+	}
+	if s.backupStoreKind() == "object" {
+		if s.objectStore == nil {
+			_ = os.Remove(tmpPath)
+			return backupInfo{}, errors.New("object backup store is configured but object storage is unavailable")
+		}
+		key := s.projectBackupObjectKey(route, name)
+		file, err := os.Open(tmpPath)
+		if err != nil {
+			_ = os.Remove(tmpPath)
+			return backupInfo{}, err
+		}
+		uploaded, putErr := s.objectStore.Put(contextWithTimeout(), key, file, stat.Size(), "application/gzip")
+		closeErr := file.Close()
+		_ = os.Remove(tmpPath)
+		if putErr != nil {
+			return backupInfo{}, putErr
+		}
+		if closeErr != nil {
+			return backupInfo{}, closeErr
+		}
+		return backupInfo{
+			Name:      name,
+			Key:       key,
+			Store:     "object",
+			Size:      uploaded.Size,
+			CreatedAt: uploaded.LastModified.UTC().Format(time.RFC3339Nano),
+			ProjectID: route.ID,
+			Runtime:   route.Name,
+		}, nil
+	}
+	path := filepath.Join(projectBackupDir, name)
 	if err := os.Rename(tmpPath, path); err != nil {
 		_ = os.Remove(tmpPath)
 		return backupInfo{}, err
 	}
-	stat, err := os.Stat(path)
+	stat, err = os.Stat(path)
 	if err != nil {
 		return backupInfo{}, err
 	}
 	return backupInfo{
 		Name:      name,
 		Path:      path,
+		Store:     "local",
 		Size:      stat.Size(),
 		CreatedAt: stat.ModTime().UTC().Format(time.RFC3339Nano),
 		ProjectID: route.ID,
@@ -129,7 +168,13 @@ func (s *Server) createBackup(route ProjectRoute) (backupInfo, error) {
 	}, nil
 }
 
-func (s *Server) restoreBackup(route ProjectRoute, backupPath string) error {
+func (s *Server) restoreBackup(route ProjectRoute, backup backupInfo) error {
+	backupPath, cleanup, err := s.localBackupPath(backup)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
 	root := s.workspaces.Root()
 	targetDir := filepath.Join(root, route.Name)
 	extractDir := filepath.Join(root, "."+route.Name+".restore-"+fmt.Sprint(time.Now().UnixNano()))
@@ -168,6 +213,35 @@ func (s *Server) restoreBackup(route ProjectRoute, backupPath string) error {
 }
 
 func (s *Server) listBackups(route ProjectRoute) ([]backupInfo, error) {
+	if s.backupStoreKind() == "object" {
+		if s.objectStore == nil {
+			return nil, errors.New("object backup store is configured but object storage is unavailable")
+		}
+		objects, err := s.objectStore.List(contextWithTimeout(), s.projectBackupObjectPrefix(route))
+		if err != nil {
+			return nil, err
+		}
+		backups := make([]backupInfo, 0, len(objects))
+		for _, object := range objects {
+			if !strings.HasSuffix(object.Key, ".tar.gz") {
+				continue
+			}
+			backups = append(backups, backupInfo{
+				Name:      filepath.Base(object.Key),
+				Key:       object.Key,
+				Store:     "object",
+				Size:      object.Size,
+				CreatedAt: object.LastModified.UTC().Format(time.RFC3339Nano),
+				ProjectID: route.ID,
+				Runtime:   route.Name,
+			})
+		}
+		sort.Slice(backups, func(i, j int) bool {
+			return backups[i].CreatedAt > backups[j].CreatedAt
+		})
+		return backups, nil
+	}
+
 	projectBackupDir := s.projectBackupDir(route)
 	entries, err := os.ReadDir(projectBackupDir)
 	if err != nil {
@@ -188,6 +262,7 @@ func (s *Server) listBackups(route ProjectRoute) ([]backupInfo, error) {
 		backups = append(backups, backupInfo{
 			Name:      entry.Name(),
 			Path:      filepath.Join(projectBackupDir, entry.Name()),
+			Store:     "local",
 			Size:      stat.Size(),
 			CreatedAt: stat.ModTime().UTC().Format(time.RFC3339Nano),
 			ProjectID: route.ID,
@@ -206,6 +281,15 @@ func (s *Server) pruneBackups(route ProjectRoute) error {
 		return err
 	}
 	for i := s.cfg.BackupRetention; i < len(backups); i++ {
+		if backups[i].Store == "object" {
+			if s.objectStore == nil {
+				return errors.New("object backup store is configured but object storage is unavailable")
+			}
+			if err := s.objectStore.Delete(contextWithTimeout(), backups[i].Key); err != nil {
+				return err
+			}
+			continue
+		}
 		if err := os.Remove(backups[i].Path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
@@ -213,19 +297,77 @@ func (s *Server) pruneBackups(route ProjectRoute) error {
 	return nil
 }
 
-func (s *Server) resolveBackupPath(route ProjectRoute, backupName string) (string, error) {
+func (s *Server) resolveBackup(route ProjectRoute, backupName string) (backupInfo, error) {
 	if strings.ContainsAny(backupName, `/\`) || backupName == "." || backupName == ".." {
-		return "", errors.New("invalid backupName")
+		return backupInfo{}, errors.New("invalid backupName")
 	}
-	path := filepath.Join(s.projectBackupDir(route), backupName)
-	if _, err := os.Stat(path); err != nil {
-		return "", err
+	backups, err := s.listBackups(route)
+	if err != nil {
+		return backupInfo{}, err
 	}
-	return path, nil
+	for _, backup := range backups {
+		if backup.Name == backupName {
+			return backup, nil
+		}
+	}
+	return backupInfo{}, os.ErrNotExist
 }
 
 func (s *Server) projectBackupDir(route ProjectRoute) string {
 	return filepath.Join(s.cfg.BackupRoot, route.Name)
+}
+
+func (s *Server) projectBackupObjectPrefix(route ProjectRoute) string {
+	return objectKey(s.cfg.ObjectStorePrefix, "backups", route.Name) + "/"
+}
+
+func (s *Server) projectBackupObjectKey(route ProjectRoute, name string) string {
+	return objectKey(s.cfg.ObjectStorePrefix, "backups", route.Name, name)
+}
+
+func (s *Server) backupStoreKind() string {
+	kind := strings.TrimSpace(strings.ToLower(s.cfg.BackupStore))
+	if kind == "" {
+		return "local"
+	}
+	return kind
+}
+
+func (s *Server) localBackupPath(backup backupInfo) (string, func(), error) {
+	if backup.Store != "object" {
+		return backup.Path, func() {}, nil
+	}
+	if s.objectStore == nil {
+		return "", func() {}, errors.New("object backup store is configured but object storage is unavailable")
+	}
+	if err := os.MkdirAll(s.cfg.BackupRoot, 0o700); err != nil {
+		return "", func() {}, err
+	}
+	reader, _, err := s.objectStore.Get(contextWithTimeout(), backup.Key)
+	if err != nil {
+		return "", func() {}, err
+	}
+	defer reader.Close()
+	tmp, err := os.CreateTemp(s.cfg.BackupRoot, "restore-*.tar.gz")
+	if err != nil {
+		return "", func() {}, err
+	}
+	path := tmp.Name()
+	if _, err := io.Copy(tmp, reader); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(path)
+		return "", func() {}, err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(path)
+		return "", func() {}, err
+	}
+	return path, func() { _ = os.Remove(path) }, nil
+}
+
+func contextWithTimeout() context.Context {
+	ctx, _ := context.WithTimeout(context.Background(), 10*time.Minute)
+	return ctx
 }
 
 func writeTarGz(sourceDir, targetPath string) error {

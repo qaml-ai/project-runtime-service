@@ -42,6 +42,8 @@ type Server struct {
 
 	httpClient        *http.Client
 	proxyCapabilities map[string]ProxyCapability
+	objectStore       objectStore
+	projectStates     *projectStateStore
 }
 
 func NewServer(cfg Config, containers *container.Manager, workspaces *workspace.Manager, fsManager *fsops.Manager, usageStore *state.UsageStore) *Server {
@@ -65,9 +67,32 @@ func NewServer(cfg Config, containers *container.Manager, workspaces *workspace.
 		usage:             usageStore,
 		httpClient:        &http.Client{Transport: transport},
 		proxyCapabilities: loadProxyCapabilities(cfg),
+		projectStates:     newProjectStateStore(cfg.ProjectStateRoot),
 	}
+	objectStore, err := newObjectStore(cfg)
+	if err != nil {
+		log.Printf("[ProjectRuntime] object storage disabled: %v", err)
+	} else {
+		s.objectStore = objectStore
+	}
+	s.startArchiveSweeper()
 
 	return s
+}
+
+func (s *Server) startArchiveSweeper() {
+	if s.cfg.ArchiveAfter <= 0 || s.archiveStoreKind() != "object" || s.objectStore == nil {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(s.cfg.ArchiveSweepInterval)
+		defer ticker.Stop()
+		for range ticker.C {
+			if err := s.archiveInactiveProjects(); err != nil {
+				log.Printf("[ProjectRuntime] archive sweep warning: %v", err)
+			}
+		}
+	}()
 }
 
 func (s *Server) Handler() http.Handler {

@@ -45,9 +45,21 @@ func (s *Server) handleProjectRoute(w http.ResponseWriter, req *http.Request) er
 		writeJSON(w, http.StatusOK, map[string]any{"success": true, "terminated": success})
 		return nil
 	}
+	if route.Subpath == "/storage" && req.Method == http.MethodGet {
+		return s.handleProjectStorageGet(w, req, route)
+	}
+	if route.Subpath == "/archive" && req.Method == http.MethodPost {
+		return s.handleProjectArchive(w, req, route)
+	}
+	if route.Subpath == "/unarchive" && req.Method == http.MethodPost {
+		return s.handleProjectUnarchive(w, req, route)
+	}
 	if route.Subpath == "/ensure" && req.Method == http.MethodPost {
 		if s.rejectInsufficientHeadroom(w) {
 			return nil
+		}
+		if err := s.ensureProjectLocal(route); err != nil {
+			return err
 		}
 		if _, err := s.containers.EnsureContainer(route.Name, projectContainerOptions(route)); err != nil {
 			return err
@@ -64,9 +76,15 @@ func (s *Server) handleProjectRoute(w http.ResponseWriter, req *http.Request) er
 		return nil
 	}
 	if route.Subpath == "/exec" && req.Method == http.MethodPost {
+		if err := s.ensureProjectLocal(route); err != nil {
+			return err
+		}
 		return s.handleExec(w, req, route.Name, projectContainerOptions(route))
 	}
 	if strings.HasPrefix(route.Subpath, "/fs/") {
+		if err := s.ensureProjectLocal(route); err != nil {
+			return err
+		}
 		if req.Method != http.MethodGet && s.rejectInsufficientHeadroom(w) {
 			return nil
 		}
@@ -76,12 +94,18 @@ func (s *Server) handleProjectRoute(w http.ResponseWriter, req *http.Request) er
 		return s.handleProjectFSRoute(w, req, route)
 	}
 	if route.Subpath == "/clone" && req.Method == http.MethodPost {
+		if err := s.ensureProjectLocal(route); err != nil {
+			return err
+		}
 		return s.handleProjectClone(w, req, route)
 	}
 	if route.Subpath == "/backups" && req.Method == http.MethodGet {
 		return s.handleProjectBackupsList(w, req, route)
 	}
 	if route.Subpath == "/backups" && req.Method == http.MethodPost {
+		if err := s.ensureProjectLocal(route); err != nil {
+			return err
+		}
 		return s.handleProjectBackupCreate(w, req, route)
 	}
 	if route.Subpath == "/restore" && req.Method == http.MethodPost {
@@ -100,11 +124,14 @@ func (s *Server) handleProjectGet(w http.ResponseWriter, _ *http.Request, route 
 	if err != nil {
 		return err
 	}
+	state, _ := s.projectStates.load(route)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"id":        route.ID,
-		"runtime":   route.Name,
-		"exists":    exists.Exists,
-		"timestamp": time.Now().UTC().Format(time.RFC3339Nano),
+		"id":           route.ID,
+		"runtime":      route.Name,
+		"exists":       exists.Exists,
+		"storageState": state.StorageState,
+		"archive":      state.Archive,
+		"timestamp":    time.Now().UTC().Format(time.RFC3339Nano),
 	})
 	return nil
 }
@@ -221,6 +248,8 @@ func (s *Server) handleHostCapabilities(w http.ResponseWriter, _ *http.Request) 
 			"reflinkClone":           runtime.GOOS == "linux",
 			"genericProxy":           true,
 			"localBackups":           true,
+			"objectBackups":          s.backupStoreKind() == "object" && s.objectStore != nil,
+			"projectArchive":         s.archiveStoreKind() == "object" && s.objectStore != nil,
 			"mtls":                   true,
 			"bearerAuth":             true,
 		},
@@ -234,6 +263,9 @@ func (s *Server) handleHostCapabilities(w http.ResponseWriter, _ *http.Request) 
 			"POST /v1/projects/:id/clone",
 			"GET|POST /v1/projects/:id/backups",
 			"POST /v1/projects/:id/restore",
+			"GET /v1/projects/:id/storage",
+			"POST /v1/projects/:id/archive",
+			"POST /v1/projects/:id/unarchive",
 			"GET /v1/projects/:id/proxies",
 		},
 	})
