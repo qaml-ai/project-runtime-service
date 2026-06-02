@@ -9,30 +9,29 @@ import (
 )
 
 type Config struct {
-	Port                      int
-	ListenAddr                string
-	DockerProxyPort           int
-	DockerProxyListenAddr     string
-	ControlAuthType           string
-	ControlBearerToken        string
-	TLSCertFile               string
-	TLSKeyFile                string
-	TLSClientCAFile           string
-	HostPiSessionRoot         string
-	UsageDBRoot               string
-	BackupRoot                string
-	BackupRetention           int
-	DiskReserveBytes          int64
-	ProxyCapabilitiesJSON     string
-	ProxyCapabilitiesFile     string
-	ProjectRuntimeProxySecret string
-	DataProxyUpstreamURL      string
-	WorkerBaseURL             string
-	SandboxProxySecret        string
-	IdleTimeout               time.Duration
-	ReadHeaderTimeout         time.Duration
-	WriteTimeout              time.Duration
-	TraceSandboxHost          bool
+	Port                  int
+	ListenAddr            string
+	DockerProxyPort       int
+	DockerProxyListenAddr string
+	ControlAuthType       string
+	ControlBearerToken    string
+	TLSCertFile           string
+	TLSKeyFile            string
+	TLSClientCAFile       string
+	HostPiSessionRoot     string
+	UsageDBRoot           string
+	BackupRoot            string
+	BackupRetention       int
+	DiskReserveBytes      int64
+	ProxyCapabilitiesJSON string
+	ProxyCapabilitiesFile string
+	DataProxyUpstreamURL  string
+	WorkerBaseURL         string
+	SandboxProxySecret    string
+	IdleTimeout           time.Duration
+	ReadHeaderTimeout     time.Duration
+	WriteTimeout          time.Duration
+	TraceSandboxHost      bool
 }
 
 type DataProxyServiceConfig struct {
@@ -67,17 +66,13 @@ func LoadConfig() Config {
 		DiskReserveBytes:      envInt64("PROJECT_RUNTIME_DISK_RESERVE_BYTES", 20*1024*1024*1024),
 		ProxyCapabilitiesJSON: envString("PROJECT_RUNTIME_PROXY_CAPABILITIES_JSON", ""),
 		ProxyCapabilitiesFile: envString("PROJECT_RUNTIME_PROXY_CAPABILITIES_FILE", ""),
-		ProjectRuntimeProxySecret: firstNonEmpty(
-			envString("PROJECT_RUNTIME_PROXY_SECRET", ""),
-			envString("SANDBOX_PROXY_SECRET", ""),
-		),
-		DataProxyUpstreamURL: envString("DATA_PROXY_UPSTREAM_URL", "http://127.0.0.1:"+strconv.Itoa(dataProxyPort)),
-		WorkerBaseURL:        envString("WORKER_BASE_URL", ""),
-		SandboxProxySecret:   envString("SANDBOX_PROXY_SECRET", ""),
-		IdleTimeout:          time.Duration(idleSecs) * time.Second,
-		ReadHeaderTimeout:    15 * time.Second,
-		WriteTimeout:         0,
-		TraceSandboxHost:     envString("TRACE_SANDBOX_HOST", "") == "1",
+		DataProxyUpstreamURL:  envString("DATA_PROXY_UPSTREAM_URL", "http://127.0.0.1:"+strconv.Itoa(dataProxyPort)),
+		WorkerBaseURL:         envString("WORKER_BASE_URL", ""),
+		SandboxProxySecret:    envString("SANDBOX_PROXY_SECRET", ""),
+		IdleTimeout:           time.Duration(idleSecs) * time.Second,
+		ReadHeaderTimeout:     15 * time.Second,
+		WriteTimeout:          0,
+		TraceSandboxHost:      envString("TRACE_SANDBOX_HOST", "") == "1",
 	}
 }
 
@@ -156,15 +151,6 @@ func envString(key, fallback string) string {
 		return value
 	}
 	return fallback
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if value != "" {
-			return value
-		}
-	}
-	return ""
 }
 
 func envInt(key string, fallback int) int {

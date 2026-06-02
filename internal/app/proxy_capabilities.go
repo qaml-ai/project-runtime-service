@@ -23,26 +23,24 @@ type proxyCapabilityConfig struct {
 	Capabilities []ProxyCapability `json:"capabilities"`
 }
 
-const camelArtifactsProxyCapabilityName = "camelai-artifacts"
-
 func loadProxyCapabilities(cfg Config) map[string]ProxyCapability {
 	raw := strings.TrimSpace(cfg.ProxyCapabilitiesJSON)
 	if raw == "" && strings.TrimSpace(cfg.ProxyCapabilitiesFile) != "" {
 		content, err := os.ReadFile(cfg.ProxyCapabilitiesFile)
 		if err != nil {
 			log.Printf("[SandboxHost] failed to read proxy capability file %s: %v", cfg.ProxyCapabilitiesFile, err)
-			return defaultProxyCapabilities(cfg)
+			return map[string]ProxyCapability{}
 		}
 		raw = string(content)
 	}
 	if raw == "" {
-		return defaultProxyCapabilities(cfg)
+		return map[string]ProxyCapability{}
 	}
 
 	var parsed proxyCapabilityConfig
 	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
 		log.Printf("[SandboxHost] failed to parse proxy capabilities: %v", err)
-		return defaultProxyCapabilities(cfg)
+		return map[string]ProxyCapability{}
 	}
 	out := make(map[string]ProxyCapability, len(parsed.Capabilities))
 	for _, capability := range parsed.Capabilities {
@@ -53,29 +51,7 @@ func loadProxyCapabilities(cfg Config) map[string]ProxyCapability {
 		}
 		out[capability.Name] = capability
 	}
-	for name, capability := range defaultProxyCapabilities(cfg) {
-		if _, exists := out[name]; !exists {
-			out[name] = capability
-		}
-	}
 	return out
-}
-
-func defaultProxyCapabilities(cfg Config) map[string]ProxyCapability {
-	workerBaseURL := strings.TrimRight(strings.TrimSpace(cfg.WorkerBaseURL), "/")
-	secret := strings.TrimSpace(cfg.ProjectRuntimeProxySecret)
-	if workerBaseURL == "" || secret == "" {
-		return map[string]ProxyCapability{}
-	}
-	return map[string]ProxyCapability{
-		camelArtifactsProxyCapabilityName: {
-			Name:   camelArtifactsProxyCapabilityName,
-			Target: workerBaseURL + "/api/internal/project-runtime/artifacts",
-			Headers: map[string]string{
-				"X-Project-Runtime-Secret": secret,
-			},
-		},
-	}
 }
 
 func (s *Server) handleProjectProxiesList(w http.ResponseWriter, _ *http.Request, route ProjectRoute) error {
