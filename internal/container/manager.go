@@ -17,7 +17,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/qaml-ai/project-runtime-service/internal/workspace"
 	dockercontainer "github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	dockernetwork "github.com/docker/docker/api/types/network"
@@ -26,6 +25,7 @@ import (
 	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/docker/go-connections/nat"
 	dockerunits "github.com/docker/go-units"
+	"github.com/qaml-ai/project-runtime-service/internal/workspace"
 )
 
 type EnsureContainerOptions struct {
@@ -62,6 +62,8 @@ type ExecResponse struct {
 const (
 	labelOrgID                    = "com.chiridion.org-id"
 	labelWorkspaceID              = "com.chiridion.workspace-id"
+	labelRuntimeScope             = "com.qaml.project-runtime.scope"
+	labelRuntimeProjectID         = "com.qaml.project-runtime.project-id"
 	defaultContainerIdleTimeoutMS = 300_000
 	minContainerIdleTimeout       = 10 * time.Second
 )
@@ -81,6 +83,8 @@ type Manager struct {
 	containerMemory            string
 	containerCPUShares         string
 	containerRuntime           string
+	containerNamePrefix        string
+	containerScope             string
 	containerHTTPPort          int
 	idleTimeout                time.Duration
 	r2CredentialsRoot          string
@@ -120,6 +124,8 @@ func NewManager(workspaces *workspace.Manager) *Manager {
 		containerMemory:            envString("CONTAINER_MEMORY", "16g"),
 		containerCPUShares:         envString("CONTAINER_CPU_SHARES", "2048"),
 		containerRuntime:           containerRuntime,
+		containerNamePrefix:        envString("CONTAINER_NAME_PREFIX", "prs-"),
+		containerScope:             envString("CONTAINER_SCOPE", "project-runtime-service"),
 		containerHTTPPort:          8080,
 		idleTimeout:                containerIdleTimeoutFromEnv(),
 		r2CredentialsRoot:          envString("R2_CREDENTIALS_ROOT", defaultR2CredentialsRoot()),
@@ -352,12 +358,14 @@ func (m *Manager) EnsureContainer(name string, opts EnsureContainerOptions) (*Co
 }
 
 func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptions) (*ContainerRecord, error) {
+	dockerName := m.dockerName(name)
+
 	m.mu.Lock()
 	cached := m.containers[name]
 	m.mu.Unlock()
 
 	if cached != nil {
-		inspect, inspectErr := m.inspectContainer(name, 30*time.Second)
+		inspect, inspectErr := m.inspectContainer(dockerName, 30*time.Second)
 		if inspectErr == nil && inspect.State != nil && inspect.State.Running {
 			if !m.matchesConfiguredImage(inspect) {
 				m.trace("ensure_container_image_mismatch_cached", map[string]any{
@@ -366,7 +374,7 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 					"containerImage":  configuredImageFromInspect(inspect),
 				})
 				log.Printf("[ContainerManager] container %s image mismatch (have=%s want=%s); recreating", name, configuredImageFromInspect(inspect), m.sandboxImage)
-				_ = m.removeContainerIfExists(name, true)
+				_ = m.removeContainerIfExists(dockerName, true)
 				m.mu.Lock()
 				m.removeContainerRecordLocked(name)
 				m.mu.Unlock()
@@ -388,7 +396,7 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 		}
 	}
 
-	if inspect, err := m.inspectContainer(name, 30*time.Second); err == nil && inspect.State != nil && inspect.State.Running {
+	if inspect, err := m.inspectContainer(dockerName, 30*time.Second); err == nil && inspect.State != nil && inspect.State.Running {
 		if !m.matchesConfiguredImage(inspect) {
 			m.trace("ensure_container_image_mismatch_existing", map[string]any{
 				"name":            name,
@@ -396,7 +404,7 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 				"containerImage":  configuredImageFromInspect(inspect),
 			})
 			log.Printf("[ContainerManager] container %s image mismatch (have=%s want=%s); recreating", name, configuredImageFromInspect(inspect), m.sandboxImage)
-			_ = m.removeContainerIfExists(name, true)
+			_ = m.removeContainerIfExists(dockerName, true)
 		} else {
 			port := hostPortFromInspect(inspect, m.containerHTTPPort)
 			containerIP := containerIPFromInspect(inspect)
@@ -411,7 +419,7 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 				}
 				rec := &ContainerRecord{
 					Name:             name,
-					ContainerID:      name,
+					ContainerID:      dockerName,
 					HostPort:         port,
 					ContainerIP:      containerIP,
 					Status:           "running",
@@ -435,7 +443,7 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 		}
 	}
 
-	_ = m.removeContainerIfExists(name, true)
+	_ = m.removeContainerIfExists(dockerName, true)
 
 	if _, err := m.workspaces.Ensure(name); err != nil {
 		return nil, err
@@ -457,7 +465,7 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 
 	var r2Config *containerR2Config
 	if opts.OrgID != "" && opts.WorkspaceID != "" {
-		cfg, err := m.prepareContainerR2Config(name, opts.OrgID, opts.WorkspaceID)
+		cfg, err := m.prepareContainerR2Config(dockerName, opts.OrgID, opts.WorkspaceID)
 		if err != nil {
 			return nil, fmt.Errorf("prepare R2 config for %s: %w", name, err)
 		}
@@ -503,8 +511,10 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 			containerHTTPPort: {},
 		},
 		Labels: map[string]string{
-			labelOrgID:       opts.OrgID,
-			labelWorkspaceID: opts.WorkspaceID,
+			labelOrgID:            opts.OrgID,
+			labelWorkspaceID:      opts.WorkspaceID,
+			labelRuntimeScope:     m.containerScope,
+			labelRuntimeProjectID: name,
 		},
 	}
 	hostConfig := &dockercontainer.HostConfig{
@@ -529,12 +539,12 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 		hostConfig,
 		&dockernetwork.NetworkingConfig{},
 		nil,
-		name,
+		dockerName,
 	)
 	cancel()
 	if err != nil {
 		if r2Config != nil {
-			_ = m.cleanupContainerR2Config(name)
+			_ = m.cleanupContainerR2Config(dockerName)
 		}
 		m.trace("ensure_container_create_failed", map[string]any{"name": name, "error": err.Error()})
 		return nil, fmt.Errorf("failed to create container %s: %w", name, err)
@@ -590,6 +600,8 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 }
 
 func (m *Manager) GetContainer(name string) (*ContainerRecord, error) {
+	dockerName := m.dockerName(name)
+
 	m.mu.Lock()
 	cached := m.containers[name]
 	m.mu.Unlock()
@@ -612,7 +624,7 @@ func (m *Manager) GetContainer(name string) (*ContainerRecord, error) {
 		}
 	}
 
-	if inspect, err := m.inspectContainer(name, 30*time.Second); err == nil && inspect.State != nil && inspect.State.Running {
+	if inspect, err := m.inspectContainer(dockerName, 30*time.Second); err == nil && inspect.State != nil && inspect.State.Running {
 		if !m.matchesConfiguredImage(inspect) {
 			m.trace("get_container_image_mismatch_existing", map[string]any{
 				"name":            name,
@@ -620,7 +632,7 @@ func (m *Manager) GetContainer(name string) (*ContainerRecord, error) {
 				"containerImage":  configuredImageFromInspect(inspect),
 			})
 			log.Printf("[ContainerManager] container %s image mismatch (have=%s want=%s); recreating", name, configuredImageFromInspect(inspect), m.sandboxImage)
-			_ = m.removeContainerIfExists(name, true)
+			_ = m.removeContainerIfExists(dockerName, true)
 			return nil, nil
 		}
 		port := hostPortFromInspect(inspect, m.containerHTTPPort)
@@ -628,7 +640,7 @@ func (m *Manager) GetContainer(name string) (*ContainerRecord, error) {
 		if port > 0 {
 			rec := &ContainerRecord{
 				Name:             name,
-				ContainerID:      name,
+				ContainerID:      dockerName,
 				HostPort:         port,
 				ContainerIP:      containerIP,
 				Status:           "running",
@@ -660,6 +672,7 @@ func (m *Manager) Exec(ctx context.Context, name string, opts EnsureContainerOpt
 	if _, err := m.EnsureContainer(name, opts); err != nil {
 		return ExecResponse{}, err
 	}
+	dockerName := m.dockerName(name)
 
 	workingDir := strings.TrimSpace(req.Cwd)
 	if workingDir == "" {
@@ -678,7 +691,7 @@ func (m *Manager) Exec(ctx context.Context, name string, opts EnsureContainerOpt
 		execEnv = append(execEnv, key+"="+value)
 	}
 
-	createResp, err := m.docker.ContainerExecCreate(ctx, name, dockercontainer.ExecOptions{
+	createResp, err := m.docker.ContainerExecCreate(ctx, dockerName, dockercontainer.ExecOptions{
 		User:         "claude",
 		AttachStdout: true,
 		AttachStderr: true,
@@ -717,6 +730,8 @@ func (m *Manager) Exec(ctx context.Context, name string, opts EnsureContainerOpt
 }
 
 func (m *Manager) TerminateContainer(name, reason string) (bool, error) {
+	dockerName := m.dockerName(name)
+
 	m.mu.Lock()
 	existing := copyRecord(m.containers[name])
 	m.mu.Unlock()
@@ -724,14 +739,14 @@ func (m *Manager) TerminateContainer(name, reason string) (bool, error) {
 
 	stopCtx, stopCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	stopTimeoutSecs := 5
-	stopErr := m.docker.ContainerStop(stopCtx, name, dockercontainer.StopOptions{Timeout: &stopTimeoutSecs})
+	stopErr := m.docker.ContainerStop(stopCtx, dockerName, dockercontainer.StopOptions{Timeout: &stopTimeoutSecs})
 	stopCancel()
 	noSuchContainer := stopErr != nil && dockererrdefs.IsNotFound(stopErr)
 	if stopErr != nil && !noSuchContainer {
 		m.trace("terminate_container_stop_failed", map[string]any{"name": name, "reason": reason, "error": stopErr.Error()})
 	}
 
-	removeErr := m.removeContainerIfExists(name, true)
+	removeErr := m.removeContainerIfExists(dockerName, true)
 	terminated := removeErr == nil || noSuchContainer
 	if !terminated {
 		stillRunning, _ := m.isRunning(name)
@@ -834,8 +849,19 @@ func (m *Manager) workspacePath(name string) string {
 	return filepath.Join(m.workspacesRoot, name)
 }
 
+func (m *Manager) dockerName(name string) string {
+	return m.containerNamePrefix + name
+}
+
+func (m *Manager) logicalName(dockerName string) string {
+	if m.containerNamePrefix == "" {
+		return dockerName
+	}
+	return strings.TrimPrefix(dockerName, m.containerNamePrefix)
+}
+
 func (m *Manager) getHostPort(name string) (int, error) {
-	inspect, err := m.inspectContainer(name, 30*time.Second)
+	inspect, err := m.inspectContainer(m.dockerName(name), 30*time.Second)
 	if err != nil {
 		return 0, err
 	}
@@ -843,7 +869,7 @@ func (m *Manager) getHostPort(name string) (int, error) {
 }
 
 func (m *Manager) getContainerIP(name string) (string, error) {
-	inspect, err := m.inspectContainer(name, 30*time.Second)
+	inspect, err := m.inspectContainer(m.dockerName(name), 30*time.Second)
 	if err != nil {
 		return "", err
 	}
@@ -851,7 +877,7 @@ func (m *Manager) getContainerIP(name string) (string, error) {
 }
 
 func (m *Manager) getHostPortAndIP(name string) (int, string) {
-	inspect, err := m.inspectContainer(name, 30*time.Second)
+	inspect, err := m.inspectContainer(m.dockerName(name), 30*time.Second)
 	if err != nil {
 		return 0, ""
 	}
@@ -859,7 +885,7 @@ func (m *Manager) getHostPortAndIP(name string) (int, string) {
 }
 
 func (m *Manager) isRunning(name string) (bool, error) {
-	inspect, err := m.inspectContainer(name, 30*time.Second)
+	inspect, err := m.inspectContainer(m.dockerName(name), 30*time.Second)
 	if err != nil {
 		if dockererrdefs.IsNotFound(err) {
 			return false, nil
@@ -919,7 +945,7 @@ func (m *Manager) discoverRunningContainers() {
 	defer cancel()
 
 	list, err := m.docker.ContainerList(ctx, dockercontainer.ListOptions{
-		Filters: filters.NewArgs(filters.Arg("label", labelOrgID)),
+		Filters: filters.NewArgs(filters.Arg("label", labelRuntimeScope+"="+m.containerScope)),
 	})
 	if err != nil {
 		log.Printf("[ContainerManager] failed to discover running containers: %v", err)
@@ -951,8 +977,13 @@ func (m *Manager) discoverRunningContainers() {
 			continue
 		}
 
+		logicalName := labelFromInspect(inspect, labelRuntimeProjectID)
+		if logicalName == "" {
+			logicalName = m.logicalName(name)
+		}
+
 		rec := &ContainerRecord{
-			Name:             name,
+			Name:             logicalName,
 			ContainerID:      name,
 			HostPort:         port,
 			ContainerIP:      containerIP,
@@ -965,11 +996,11 @@ func (m *Manager) discoverRunningContainers() {
 		}
 
 		m.mu.Lock()
-		m.containers[name] = rec
+		m.containers[logicalName] = rec
 		if containerIP != "" {
-			m.indexContainerIPLocked(containerIP, name)
+			m.indexContainerIPLocked(containerIP, logicalName)
 		}
-		m.resetIdleTimerLocked(name, rec)
+		m.resetIdleTimerLocked(logicalName, rec)
 		m.mu.Unlock()
 		discovered++
 	}
