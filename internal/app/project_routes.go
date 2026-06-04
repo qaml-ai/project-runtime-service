@@ -86,6 +86,12 @@ func (s *Server) handleProjectRoute(w http.ResponseWriter, req *http.Request) er
 		}
 		return s.handleProjectClone(w, req, route)
 	}
+	if route.Subpath == "/legacy-import" && req.Method == http.MethodPost {
+		if err := s.ensureProjectLocal(route); err != nil {
+			return err
+		}
+		return s.handleProjectLegacyImport(w, req, route)
+	}
 	if route.Subpath == "/backups" && req.Method == http.MethodGet {
 		return s.handleProjectBackupsList(w, req, route)
 	}
@@ -260,6 +266,7 @@ func (s *Server) handleHostCapabilities(w http.ResponseWriter, _ *http.Request) 
 			"localBackups":     true,
 			"objectBackups":    s.objectStore != nil,
 			"projectArchive":   s.objectStore != nil,
+			"legacyMigration":  true,
 			"mtls":             true,
 			"bearerAuth":       true,
 		},

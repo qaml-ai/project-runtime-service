@@ -52,6 +52,7 @@ type Server struct {
 	proxyCapabilities map[string]ProxyCapability
 	objectStore       objectStore
 	projectStates     *projectStateStore
+	migrationLocks    *migrationLockStore
 }
 
 func NewServer(cfg Config, containers *container.Manager, workspaces *workspace.Manager, fsManager *fsops.Manager, usageStore *state.UsageStore) *Server {
@@ -76,6 +77,7 @@ func NewServer(cfg Config, containers *container.Manager, workspaces *workspace.
 		httpClient:        &http.Client{Transport: transport},
 		proxyCapabilities: loadProxyCapabilities(cfg),
 		projectStates:     newProjectStateStore(cfg.ProjectStateRoot),
+		migrationLocks:    newMigrationLockStore(),
 	}
 	objectStore, err := newObjectStore(cfg)
 	if err != nil {
@@ -304,6 +306,13 @@ func (s *Server) handleWorkspaceRoute(w http.ResponseWriter, req *http.Request, 
 	name := route.Name
 	opts := container.EnsureContainerOptions{OrgID: route.OrgID, WorkspaceID: route.WorkspaceID}
 
+	if route.Subpath == "/migration-lock" {
+		return s.handleWorkspaceMigrationLock(w, req, route)
+	}
+	if s.rejectLockedLegacyWorkspaceMutation(w, req, route) {
+		return nil
+	}
+
 	if route.Subpath == "" && req.Method == http.MethodDelete {
 		success, err := s.containers.TerminateContainer(name, "workspace_purge")
 		if err != nil {
@@ -362,6 +371,83 @@ func (s *Server) handleWorkspaceRoute(w http.ResponseWriter, req *http.Request, 
 		errorJSON(w, "Not found", http.StatusNotFound)
 		return nil
 	}
+}
+
+func (s *Server) handleWorkspaceMigrationLock(w http.ResponseWriter, req *http.Request, route WorkspaceRoute) error {
+	key := route.OrgID + "/" + route.WorkspaceID
+	switch req.Method {
+	case http.MethodGet:
+		lock, ok := s.migrationLocks.get(key)
+		if !ok {
+			writeJSON(w, http.StatusOK, map[string]any{"locked": false})
+			return nil
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"locked": true, "lock": lock})
+		return nil
+	case http.MethodPost:
+		var payload struct {
+			WorkflowID string `json:"workflowId"`
+			TTLMS      int64  `json:"ttlMs"`
+		}
+		if err := decodeJSON(req, &payload); err != nil {
+			errorJSON(w, "invalid JSON body", http.StatusBadRequest)
+			return nil
+		}
+		ttl := time.Duration(payload.TTLMS) * time.Millisecond
+		if ttl <= 0 {
+			ttl = 15 * time.Minute
+		}
+		owner := strings.TrimSpace(payload.WorkflowID)
+		if owner == "" {
+			owner = "legacy-workspace-migration"
+		}
+		lock, ok := s.migrationLocks.acquire(key, owner, ttl)
+		if !ok {
+			errorJSON(w, fmt.Sprintf("Legacy workspace is already locked for migration by %s", lock.Owner), http.StatusLocked)
+			return nil
+		}
+		writeJSON(w, http.StatusOK, lock)
+		return nil
+	case http.MethodDelete:
+		var payload struct {
+			LeaseID string `json:"leaseId"`
+		}
+		if err := decodeJSON(req, &payload); err != nil {
+			errorJSON(w, "invalid JSON body", http.StatusBadRequest)
+			return nil
+		}
+		if !s.migrationLocks.release(key, strings.TrimSpace(payload.LeaseID)) {
+			errorJSON(w, "migration lock not found", http.StatusNotFound)
+			return nil
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"success": true})
+		return nil
+	default:
+		errorJSON(w, "Not found", http.StatusNotFound)
+		return nil
+	}
+}
+
+func (s *Server) rejectLockedLegacyWorkspaceMutation(w http.ResponseWriter, req *http.Request, route WorkspaceRoute) bool {
+	if !isLegacyWorkspaceMutation(req.Method, route.Subpath) {
+		return false
+	}
+	lock, ok := s.migrationLocks.get(route.OrgID + "/" + route.WorkspaceID)
+	if !ok {
+		return false
+	}
+	errorJSON(w, fmt.Sprintf("Legacy workspace is locked for migration by %s", lock.Owner), http.StatusLocked)
+	return true
+}
+
+func isLegacyWorkspaceMutation(method, subpath string) bool {
+	if subpath == "/exec" {
+		return true
+	}
+	if method == http.MethodGet || method == http.MethodHead || method == http.MethodOptions {
+		return false
+	}
+	return strings.HasPrefix(subpath, "/fs/") || subpath == "" || subpath == "/terminate"
 }
 
 func (s *Server) handleChatMessages(w http.ResponseWriter, req *http.Request, name string) error {
