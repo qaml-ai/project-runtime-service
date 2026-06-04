@@ -51,8 +51,9 @@ func (m *Manager) ensureZFSDataset(workspaceName, mountpoint string) error {
 			return err
 		}
 	}
-	_ = os.Chown(mountpoint, 1001, 1001)
-	_ = os.Chmod(mountpoint, 0o700)
+	if err := ensureWorkspaceOwner(mountpoint); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -145,8 +146,9 @@ func (m *Manager) CloneZFS(sourceName, targetName string) error {
 			return err
 		}
 	}
-	_ = os.Chown(targetDir, 1001, 1001)
-	_ = os.Chmod(targetDir, 0o700)
+	if err := ensureWorkspaceOwner(targetDir); err != nil {
+		return err
+	}
 
 	m.mu.Lock()
 	m.mounts[targetName] = m.mountRecord(targetName)
@@ -297,8 +299,10 @@ func (m *Manager) RestoreZFSBackup(workspaceName, sourcePath string) error {
 			return err
 		}
 	}
-	_ = os.Chown(targetDir, 1001, 1001)
-	_ = os.Chmod(targetDir, 0o700)
+	if err := ensureWorkspaceOwner(targetDir); err != nil {
+		rollbackPublish()
+		return err
+	}
 	if targetExists {
 		_ = m.runZFS("destroy", "-r", rollbackDataset)
 	}
@@ -392,8 +396,10 @@ func (m *Manager) ReplaceWithDirectory(workspaceName, sourceDir string) error {
 			return err
 		}
 	}
-	_ = os.Chown(targetDir, 1001, 1001)
-	_ = os.Chmod(targetDir, 0o700)
+	if err := ensureWorkspaceOwner(targetDir); err != nil {
+		rollbackPublish()
+		return err
+	}
 	if targetExists {
 		_ = m.runZFS("destroy", "-r", rollbackDataset)
 	}

@@ -36,7 +36,6 @@ The project API is generic and product-neutral:
 GET  /v1/host/capabilities
 GET  /v1/host/stats
 GET  /v1/projects/:id
-POST /v1/projects/:id/ensure
 POST /v1/projects/:id/exec
 GET  /v1/projects/:id/fs/read
 PUT  /v1/projects/:id/fs/write
@@ -164,6 +163,22 @@ changing the service protocol.
 - `PROJECT_RUNTIME_DOCKER_PROXY_PORT` defaults to `8081`. This is the docker-facing app API proxy listener.
 - `DATA_PROXY_PORT` defaults to `8090`. This is the localhost SQL data-proxy sidecar.
 
+## App API proxy
+
+Project containers use the docker-facing proxy listener for Cloudflare API and app
+service calls. The runtime service does not mint or pass per-deploy tokens into
+containers. It forwards to `WORKER_BASE_URL`, injects `X-Project-Runtime-Secret`
+when `PROJECT_RUNTIME_PROXY_SECRET` is configured, and always injects
+authoritative `X-Chiridion-*` identity headers for the target project.
+
+The app Worker can authenticate the runtime with that shared secret or with mTLS.
+Either way, project identity comes from the runtime-injected headers, not from
+user-controlled container headers.
+
+Containers should point deploy tooling at the static docker-facing endpoint:
+`http://host.docker.internal:8081/deploy/client/v4`. The runtime resolves the caller
+container and injects the project identity from host-side container metadata.
+
 ## Control-plane authentication
 
 By default the control listener is unauthenticated, which is only appropriate for local
@@ -222,7 +237,8 @@ The container should receive a local capability URL, not provider secrets. The r
 should strip spoofable identity headers, resolve the caller project from the container/runtime
 identity, inject authoritative headers, and forward the request using a configured auth plugin.
 
-Capabilities are configured with `PROJECT_RUNTIME_PROXY_CAPABILITIES_JSON` or
+Capabilities are configured with a JSON file. On Linux the default path is
+`/etc/project-runtime-service/proxies.json`; override it with
 `PROJECT_RUNTIME_PROXY_CAPABILITIES_FILE`:
 
 ```json
@@ -277,9 +293,9 @@ local -> archiving -> archived -> restoring -> local
 Use `POST /v1/projects/:id/archive` to upload the current project filesystem to object
 storage, verify the upload metadata, and then remove the local project directory. Use
 `POST /v1/projects/:id/unarchive` to restore it. Hot-path project operations such as
-`ensure`, `exec`, `fs/*`, `clone`, and backup creation automatically unarchive before
-continuing. If an archive restore fails, the project enters `error` and the service does
-not create a fresh empty project.
+`exec`, `fs/*`, `clone`, and backup creation automatically unarchive before continuing.
+If an archive restore fails, the project enters `error` and the service does not create
+a fresh empty project.
 
 Archives require complete S3-compatible object storage config. When that config is incomplete,
 cold storage is disabled. In ZFS mode archives use the same compressed `zfs send` format as
@@ -305,7 +321,7 @@ PROJECT_RUNTIME_OBJECT_PATH_STYLE=true
 ## Disk headroom
 
 `/v1/host/stats` reports total/free bytes and whether the host is above the configured reserve.
-`PROJECT_RUNTIME_DISK_RESERVE_BYTES` defaults to 20 GiB. Project ensure, file mutations, clone,
+`PROJECT_RUNTIME_DISK_RESERVE_BYTES` defaults to 20 GiB. Project file mutations, clone,
 and backup creation return HTTP 507 when the host drops below that reserve.
 
 ## License

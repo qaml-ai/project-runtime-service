@@ -34,6 +34,53 @@ func TestParseProjectRoute(t *testing.T) {
 	}
 }
 
+func TestForwardProjectCloudflareAPIProxyRequest(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path != "/client/v4/accounts/acct" {
+			t.Fatalf("unexpected upstream path: %s", req.URL.Path)
+		}
+		if req.Header.Get("X-Project-Runtime-Secret") != "shared-secret" {
+			t.Fatalf("missing project runtime secret header: %q", req.Header.Get("X-Project-Runtime-Secret"))
+		}
+		if req.Header.Get("X-Chiridion-Org-Id") != "" {
+			t.Fatalf("unexpected org forwarding header: %q", req.Header.Get("X-Chiridion-Org-Id"))
+		}
+		if req.Header.Get("X-Chiridion-Workspace-Id") != "" {
+			t.Fatalf("unexpected workspace forwarding header: %q", req.Header.Get("X-Chiridion-Workspace-Id"))
+		}
+		if req.Header.Get("X-Chiridion-Project-Id") != "pizza-delivery" {
+			t.Fatalf("missing project forwarding header: %q", req.Header.Get("X-Chiridion-Project-Id"))
+		}
+		_, _ = w.Write([]byte(`{"success":true}`))
+	}))
+	defer upstream.Close()
+
+	server := &Server{
+		cfg: Config{
+			WorkerBaseURL:             upstream.URL,
+			ProjectRuntimeProxySecret: "shared-secret",
+		},
+		httpClient: &http.Client{Timeout: 10 * time.Second},
+	}
+	route := trustedProxyRoute{
+		Name:      "project-runtime-pizza",
+		ProjectID: "pizza-delivery",
+		Subpath:   "/client/v4/accounts/acct",
+	}
+	req := httptest.NewRequest(http.MethodGet, "/deploy/client/v4/accounts/acct", nil)
+	rec := httptest.NewRecorder()
+
+	if err := server.forwardCloudflareAPIProxyRequest(rec, req, route); err != nil {
+		t.Fatalf("forwardCloudflareAPIProxyRequest failed: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got=%d want=%d", rec.Code, http.StatusOK)
+	}
+	if got := rec.Body.String(); got != `{"success":true}` {
+		t.Fatalf("unexpected body: %q", got)
+	}
+}
+
 func TestBearerControlAuth(t *testing.T) {
 	server := &Server{cfg: Config{ControlAuthType: "bearer", ControlBearerToken: "secret"}}
 	req := httptest.NewRequest(http.MethodGet, "/v1/host/capabilities", nil)
@@ -55,11 +102,15 @@ func TestBearerControlAuth(t *testing.T) {
 }
 
 func TestProxyCapabilityParsingAndHeaders(t *testing.T) {
-	cfg := Config{ProxyCapabilitiesJSON: `{
+	configFile := filepath.Join(t.TempDir(), "proxies.json")
+	if err := os.WriteFile(configFile, []byte(`{
 		"capabilities": [
 			{"name":"cf-api","target":"https://api.example.com","bearerToken":"tok","allowedProjects":["pizza-delivery"]}
 		]
-	}`}
+	}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{ProxyCapabilitiesFile: configFile}
 	capabilities := loadProxyCapabilities(cfg)
 	capability, ok := capabilities["cf-api"]
 	if !ok {
@@ -75,14 +126,27 @@ func TestProxyCapabilityParsingAndHeaders(t *testing.T) {
 	source := http.Header{}
 	source.Set("X-Project-Runtime-Project", "spoofed")
 	source.Set("X-Project-Runtime-Org", "spoofed")
+	source.Set("X-Chiridion-Project-Id", "spoofed")
 	source.Set("X-Keep", "yes")
 	target := http.Header{}
 	copyProxyHeaders(target, source)
 	if target.Get("X-Project-Runtime-Project") != "" || target.Get("X-Project-Runtime-Org") != "" {
 		t.Fatalf("expected spoofable headers to be stripped: %+v", target)
 	}
+	if target.Get("X-Chiridion-Project-Id") != "" {
+		t.Fatalf("expected chiridion identity headers to be stripped: %+v", target)
+	}
 	if target.Get("X-Keep") != "yes" {
 		t.Fatalf("expected normal header to be kept")
+	}
+}
+
+func TestStaticCloudflareAPIProxySubpath(t *testing.T) {
+	if !isStaticCloudflareAPIProxyRoute("/deploy/client/v4/accounts/acct") {
+		t.Fatal("expected static deploy proxy route")
+	}
+	if got := staticCloudflareAPIProxySubpath("/deploy/client/v4/accounts/acct"); got != "/client/v4/accounts/acct" {
+		t.Fatalf("unexpected static proxy subpath: %q", got)
 	}
 }
 

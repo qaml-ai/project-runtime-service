@@ -28,7 +28,6 @@ The host exposes project-oriented APIs while keeping legacy workspace routes dur
 GET  /v1/host/capabilities
 GET  /v1/host/stats
 GET  /v1/projects/:id
-POST /v1/projects/:id/ensure
 POST /v1/projects/:id/exec
 GET  /v1/projects/:id/fs/read
 PUT  /v1/projects/:id/fs/write
@@ -98,8 +97,9 @@ The proxy design follows the same broad pattern as exe.dev integrations:
 The container should never receive the upstream credential. It receives only the ability to use
 an attached capability.
 
-Capabilities are loaded from `PROJECT_RUNTIME_PROXY_CAPABILITIES_JSON` or
-`PROJECT_RUNTIME_PROXY_CAPABILITIES_FILE`.
+Capabilities are loaded from a JSON file. The default Linux path is
+`/etc/project-runtime-service/proxies.json`; `PROJECT_RUNTIME_PROXY_CAPABILITIES_FILE`
+can point at a different file.
 
 Example:
 
@@ -146,6 +146,13 @@ CONTROL_PLANE_TLS_CERT_FILE=/etc/project-runtime/server.crt
 CONTROL_PLANE_TLS_KEY_FILE=/etc/project-runtime/server.key
 CONTROL_PLANE_TLS_CLIENT_CA_FILE=/etc/project-runtime/client-ca.crt
 ```
+
+Project containers should not receive deploy tokens. For app API proxying, the runtime
+service authenticates to the app Worker with either mTLS or `PROJECT_RUNTIME_PROXY_SECRET`
+and injects authoritative `X-Chiridion-*` project identity headers.
+Deploy tooling should use the static docker-facing endpoint
+`http://host.docker.internal:8081/deploy/client/v4`; the project identity comes from
+the caller container's host-side metadata, not from the URL.
 
 ## Data-loss guardrails
 

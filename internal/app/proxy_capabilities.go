@@ -24,15 +24,18 @@ type proxyCapabilityConfig struct {
 }
 
 func loadProxyCapabilities(cfg Config) map[string]ProxyCapability {
-	raw := strings.TrimSpace(cfg.ProxyCapabilitiesJSON)
-	if raw == "" && strings.TrimSpace(cfg.ProxyCapabilitiesFile) != "" {
-		content, err := os.ReadFile(cfg.ProxyCapabilitiesFile)
-		if err != nil {
-			log.Printf("[ProjectRuntime] failed to read proxy capability file %s: %v", cfg.ProxyCapabilitiesFile, err)
-			return map[string]ProxyCapability{}
-		}
-		raw = string(content)
+	file := strings.TrimSpace(cfg.ProxyCapabilitiesFile)
+	if file == "" {
+		return map[string]ProxyCapability{}
 	}
+	content, err := os.ReadFile(file)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Printf("[ProjectRuntime] failed to read proxy capability file %s: %v", file, err)
+		}
+		return map[string]ProxyCapability{}
+	}
+	raw := strings.TrimSpace(string(content))
 	if raw == "" {
 		return map[string]ProxyCapability{}
 	}
@@ -111,10 +114,7 @@ func (s *Server) forwardGenericProxyRequest(w http.ResponseWriter, req *http.Req
 	if strings.TrimSpace(capability.BearerToken) != "" {
 		forwardReq.Header.Set("Authorization", "Bearer "+strings.TrimSpace(capability.BearerToken))
 	}
-	forwardReq.Header.Set("X-Project-Runtime-Project", caller.Name)
-	if caller.WorkspaceID != "" {
-		forwardReq.Header.Set("X-Project-Runtime-Workspace", caller.WorkspaceID)
-	}
+	forwardReq.Header.Set("X-Project-Runtime-Project", caller.WorkspaceID)
 
 	resp, err := s.httpClient.Do(forwardReq)
 	if err != nil {
@@ -186,5 +186,6 @@ func copyProxyHeaders(dst, src http.Header) {
 func isSpoofableProjectHeader(key string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(key))
 	return strings.HasPrefix(normalized, "x-project-runtime-") ||
+		strings.HasPrefix(normalized, "x-chiridion-") ||
 		normalized == "x-sandbox-secret"
 }

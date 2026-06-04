@@ -34,7 +34,6 @@ type Config struct {
 	ObjectStoreAccessKey      string
 	ObjectStoreSecretKey      string
 	ObjectStorePathStyle      bool
-	ProxyCapabilitiesJSON     string
 	ProxyCapabilitiesFile     string
 	DataProxyUpstreamURL      string
 	WorkerBaseURL             string
@@ -86,8 +85,7 @@ func LoadConfig() Config {
 		ObjectStoreAccessKey:      envString("PROJECT_RUNTIME_OBJECT_ACCESS_KEY_ID", ""),
 		ObjectStoreSecretKey:      envString("PROJECT_RUNTIME_OBJECT_SECRET_ACCESS_KEY", ""),
 		ObjectStorePathStyle:      envBool("PROJECT_RUNTIME_OBJECT_PATH_STYLE", true),
-		ProxyCapabilitiesJSON:     envString("PROJECT_RUNTIME_PROXY_CAPABILITIES_JSON", ""),
-		ProxyCapabilitiesFile:     envString("PROJECT_RUNTIME_PROXY_CAPABILITIES_FILE", ""),
+		ProxyCapabilitiesFile:     envString("PROJECT_RUNTIME_PROXY_CAPABILITIES_FILE", defaultProxyCapabilitiesFile()),
 		DataProxyUpstreamURL:      envString("DATA_PROXY_UPSTREAM_URL", "http://127.0.0.1:"+strconv.Itoa(dataProxyPort)),
 		WorkerBaseURL:             envString("WORKER_BASE_URL", ""),
 		ProjectRuntimeProxySecret: envString("PROJECT_RUNTIME_PROXY_SECRET", ""),
@@ -177,6 +175,13 @@ func defaultHostPiSessionRoot() string {
 		return ".project-runtime/pi-sessions"
 	}
 	return filepath.Join(wd, ".project-runtime", "pi-sessions")
+}
+
+func defaultProxyCapabilitiesFile() string {
+	if runtime.GOOS == "linux" {
+		return "/etc/project-runtime-service/proxies.json"
+	}
+	return ""
 }
 
 func envString(key, fallback string) string {

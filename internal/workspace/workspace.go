@@ -126,6 +126,9 @@ func (m *Manager) Ensure(name string) (string, error) {
 	existing := m.mounts[name]
 	m.mu.RUnlock()
 	if existing != nil && m.isWorkspaceReady(existing.MergedDir) {
+		if err := ensureWorkspaceOwner(existing.MergedDir); err != nil {
+			return "", err
+		}
 		return existing.MergedDir, nil
 	}
 
@@ -138,7 +141,9 @@ func (m *Manager) Ensure(name string) (string, error) {
 		if err := os.MkdirAll(mount.MergedDir, 0o700); err != nil {
 			return "", err
 		}
-		_ = os.Chown(mount.MergedDir, 1001, 1001)
+		if err := ensureWorkspaceOwner(mount.MergedDir); err != nil {
+			return "", err
+		}
 
 		if err := m.ensureProjectQuota(name, mount.MergedDir); err != nil {
 			return "", err
@@ -274,6 +279,19 @@ func (m *Manager) BackupExtension() string {
 func (m *Manager) isWorkspaceReady(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.IsDir()
+}
+
+func ensureWorkspaceOwner(path string) error {
+	if runtime.GOOS != "linux" || os.Geteuid() != 0 {
+		return nil
+	}
+	if err := os.Chown(path, 1001, 1001); err != nil {
+		return fmt.Errorf("set workspace owner: %w", err)
+	}
+	if err := os.Chmod(path, 0o700); err != nil {
+		return fmt.Errorf("set workspace mode: %w", err)
+	}
+	return nil
 }
 
 func (m *Manager) ensureProjectQuota(workspaceName, workspaceDir string) error {

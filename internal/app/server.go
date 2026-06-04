@@ -33,6 +33,14 @@ type WorkspaceRoute struct {
 	Subpath     string
 }
 
+type trustedProxyRoute struct {
+	Name        string
+	OrgID       string
+	WorkspaceID string
+	ProjectID   string
+	Subpath     string
+}
+
 type Server struct {
 	cfg        Config
 	containers *container.Manager
@@ -155,11 +163,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	if isCloudflareAPIProxyRoute(route.Subpath) {
-		if s.rejectCloudflareAPIProxyCaller(w, req, route, sourceIP) {
-			return
-		}
-	} else if s.rejectControlRouteFromSandboxCaller(w, req, route, sourceIP) {
+	if s.rejectControlRouteFromSandboxCaller(w, req, route, sourceIP) {
 		return
 	}
 
@@ -187,21 +191,25 @@ func (s *Server) serveDockerProxy(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	route, ok := parseWorkspaceRoute(req.URL.Path)
-	if !ok || !isCloudflareAPIProxyRoute(route.Subpath) {
-		errorJSON(w, "Not found", http.StatusNotFound)
+	if isStaticCloudflareAPIProxyRoute(req.URL.Path) {
+		subpath := staticCloudflareAPIProxySubpath(req.URL.Path)
+		trustedRoute, status, err := s.trustedProjectProxyRouteFromSourceIP(sourceIP, subpath)
+		if err != nil {
+			errorJSON(w, err.Error(), status)
+			return
+		}
+		if s.rejectCloudflareAPIProxyCaller(w, req, trustedRoute, sourceIP) {
+			return
+		}
+		s.containers.TouchContainer(trustedRoute.Name, fmt.Sprintf("project_cf_api_proxy:%s:%s", req.Method, subpath))
+		if err := s.forwardCloudflareAPIProxyRequest(w, req, trustedRoute); err != nil {
+			log.Printf("[ProjectRuntime] docker project proxy request error: %v", err)
+			errorJSON(w, fmt.Sprintf("Internal error: %v", err), http.StatusInternalServerError)
+		}
 		return
 	}
 
-	if s.rejectCloudflareAPIProxyCaller(w, req, route, sourceIP) {
-		return
-	}
-
-	s.containers.TouchContainer(route.Name, fmt.Sprintf("workspace_cf_api_proxy:%s:%s", req.Method, route.Subpath))
-	if err := s.forwardCloudflareAPIProxyRequest(w, req, route); err != nil {
-		log.Printf("[ProjectRuntime] docker proxy request error: %v", err)
-		errorJSON(w, fmt.Sprintf("Internal error: %v", err), http.StatusInternalServerError)
-	}
+	errorJSON(w, "Not found", http.StatusNotFound)
 }
 
 func (s *Server) rejectControlRouteFromSandboxCaller(
@@ -246,7 +254,7 @@ func (s *Server) rejectControlRouteFromSandboxCaller(
 func (s *Server) rejectCloudflareAPIProxyCaller(
 	w http.ResponseWriter,
 	req *http.Request,
-	route WorkspaceRoute,
+	route trustedProxyRoute,
 	sourceIP string,
 ) bool {
 	if strings.TrimSpace(sourceIP) == "" || isLoopbackSourceIP(sourceIP) {
@@ -344,8 +352,6 @@ func (s *Server) handleWorkspaceRoute(w http.ResponseWriter, req *http.Request, 
 		return s.handleChatMessages(w, req, name)
 	case strings.HasPrefix(route.Subpath, "/data-proxy/"):
 		return s.forwardDataProxyRequest(w, req, route)
-	case isCloudflareAPIProxyRoute(route.Subpath):
-		return s.forwardCloudflareAPIProxyRequest(w, req, route)
 	case route.Subpath == "/health" && req.Method == http.MethodGet:
 		if _, err := s.containers.EnsureContainer(name, opts); err != nil {
 			return err
@@ -488,7 +494,7 @@ func (s *Server) handleChatMessages(w http.ResponseWriter, req *http.Request, na
 	return nil
 }
 
-func (s *Server) forwardCloudflareAPIProxyRequest(w http.ResponseWriter, req *http.Request, route WorkspaceRoute) error {
+func (s *Server) forwardCloudflareAPIProxyRequest(w http.ResponseWriter, req *http.Request, route trustedProxyRoute) error {
 	base := strings.TrimRight(strings.TrimSpace(s.cfg.WorkerBaseURL), "/")
 	if base == "" {
 		errorJSON(w, "Cloudflare API proxy upstream not configured", http.StatusServiceUnavailable)
@@ -510,9 +516,7 @@ func (s *Server) forwardCloudflareAPIProxyRequest(w http.ResponseWriter, req *ht
 		return err
 	}
 	copyHeaders(forwardReq.Header, req.Header)
-	forwardReq.Header.Set("X-Sandbox-Secret", secret)
-	forwardReq.Header.Set("X-Chiridion-Org-Id", route.OrgID)
-	forwardReq.Header.Set("X-Chiridion-Workspace-Id", route.WorkspaceID)
+	applyTrustedProxyHeaders(forwardReq.Header, route, secret)
 
 	resp, err := s.httpClient.Do(forwardReq)
 	if err != nil {
@@ -550,8 +554,12 @@ func (s *Server) forwardDataProxyRequest(w http.ResponseWriter, req *http.Reques
 		return err
 	}
 	copyHeaders(forwardReq.Header, req.Header)
-	forwardReq.Header.Set("X-Chiridion-Org-Id", route.OrgID)
-	forwardReq.Header.Set("X-Chiridion-Workspace-Id", route.WorkspaceID)
+	applyTrustedProxyHeaders(forwardReq.Header, trustedProxyRoute{
+		Name:        route.Name,
+		OrgID:       route.OrgID,
+		WorkspaceID: route.WorkspaceID,
+		Subpath:     route.Subpath,
+	}, "")
 
 	resp, err := s.httpClient.Do(forwardReq)
 	if err != nil {
@@ -826,8 +834,17 @@ func parseWorkspaceRoute(path string) (WorkspaceRoute, bool) {
 
 var workspaceRouteRegex = regexp.MustCompile(`^/v1/workspaces/([^/]+)/([^/]+)(/.*)?$`)
 
-func isCloudflareAPIProxyRoute(subpath string) bool {
-	return subpath == "/client/v4" || strings.HasPrefix(subpath, "/client/v4/")
+const staticDeployProxyPrefix = "/deploy/client/v4"
+
+func isStaticCloudflareAPIProxyRoute(path string) bool {
+	return path == staticDeployProxyPrefix || strings.HasPrefix(path, staticDeployProxyPrefix+"/")
+}
+
+func staticCloudflareAPIProxySubpath(path string) string {
+	if path == staticDeployProxyPrefix {
+		return "/client/v4"
+	}
+	return strings.TrimPrefix(path, "/deploy")
 }
 
 func sandboxName(workspaceID string) string {
@@ -917,6 +934,21 @@ func isInternalProxyHeader(key string) bool {
 	// Miniflare injects MF-* headers for local service-binding proxying. They
 	// are not valid user/Worker headers and must not be replayed downstream.
 	return strings.HasPrefix(strings.ToLower(key), "mf-")
+}
+
+func applyTrustedProxyHeaders(headers http.Header, route trustedProxyRoute, secret string) {
+	if strings.TrimSpace(secret) != "" {
+		headers.Set("X-Project-Runtime-Secret", strings.TrimSpace(secret))
+	}
+	if strings.TrimSpace(route.OrgID) != "" {
+		headers.Set("X-Chiridion-Org-Id", route.OrgID)
+	}
+	if strings.TrimSpace(route.WorkspaceID) != "" {
+		headers.Set("X-Chiridion-Workspace-Id", route.WorkspaceID)
+	}
+	if strings.TrimSpace(route.ProjectID) != "" {
+		headers.Set("X-Chiridion-Project-Id", route.ProjectID)
+	}
 }
 
 func decodeJSON(req *http.Request, target any) error {

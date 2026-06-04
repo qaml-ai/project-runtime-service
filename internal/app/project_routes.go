@@ -54,19 +54,6 @@ func (s *Server) handleProjectRoute(w http.ResponseWriter, req *http.Request) er
 	if route.Subpath == "/unarchive" && req.Method == http.MethodPost {
 		return s.handleProjectUnarchive(w, req, route)
 	}
-	if route.Subpath == "/ensure" && req.Method == http.MethodPost {
-		if s.rejectInsufficientHeadroom(w) {
-			return nil
-		}
-		if err := s.ensureProjectLocal(route); err != nil {
-			return err
-		}
-		if _, err := s.containers.EnsureContainer(route.Name, projectContainerOptions(route)); err != nil {
-			return err
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"success": true, "projectId": route.ID})
-		return nil
-	}
 	if route.Subpath == "/terminate" && req.Method == http.MethodPost {
 		success, err := s.containers.TerminateContainer(route.Name, "project_terminate")
 		if err != nil {
@@ -79,7 +66,7 @@ func (s *Server) handleProjectRoute(w http.ResponseWriter, req *http.Request) er
 		if err := s.ensureProjectLocal(route); err != nil {
 			return err
 		}
-		return s.handleExec(w, req, route.Name, projectContainerOptions(route))
+		return s.handleExec(w, req, route.Name, container.EnsureContainerOptions{WorkspaceID: route.ID})
 	}
 	if strings.HasPrefix(route.Subpath, "/fs/") {
 		if err := s.ensureProjectLocal(route); err != nil {
@@ -215,8 +202,29 @@ func parseProjectRoute(path string) (ProjectRoute, bool) {
 	return ProjectRoute{ID: projectID, Name: projectName(projectID), Subpath: matches[2]}, true
 }
 
-func projectContainerOptions(route ProjectRoute) container.EnsureContainerOptions {
-	return container.EnsureContainerOptions{WorkspaceID: route.ID}
+func (s *Server) trustedProjectProxyRouteFromSourceIP(sourceIP, subpath string) (trustedProxyRoute, int, error) {
+	if strings.TrimSpace(sourceIP) == "" || isLoopbackSourceIP(sourceIP) {
+		return trustedProxyRoute{}, http.StatusForbidden, errors.New("deploy proxy is only available from project containers")
+	}
+	if s.containers == nil {
+		return trustedProxyRoute{}, http.StatusForbidden, errors.New("project container resolution unavailable")
+	}
+	caller, err := s.containers.ResolveContainerBySourceIP(sourceIP)
+	if err != nil {
+		return trustedProxyRoute{}, http.StatusInternalServerError, fmt.Errorf("resolve project container: %w", err)
+	}
+	if caller == nil {
+		return trustedProxyRoute{}, http.StatusForbidden, errors.New("deploy proxy is only available from project containers")
+	}
+	projectID := strings.TrimSpace(caller.WorkspaceID)
+	if projectID == "" {
+		return trustedProxyRoute{}, http.StatusConflict, errors.New("project container is missing project id")
+	}
+	return trustedProxyRoute{
+		Name:      caller.Name,
+		ProjectID: projectID,
+		Subpath:   subpath,
+	}, http.StatusOK, nil
 }
 
 func projectName(projectID string) string {
@@ -260,7 +268,6 @@ func (s *Server) handleHostCapabilities(w http.ResponseWriter, _ *http.Request) 
 			"GET /v1/host/capabilities",
 			"GET /v1/host/stats",
 			"GET /v1/projects/:id",
-			"POST /v1/projects/:id/ensure",
 			"POST /v1/projects/:id/exec",
 			"GET|PUT|POST|DELETE /v1/projects/:id/fs/*",
 			"POST /v1/projects/:id/clone",
