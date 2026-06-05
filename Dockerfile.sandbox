@@ -59,10 +59,11 @@ RUN npm install -g wrangler --loglevel=warn
 
 # Directories (R2 credentials are bind-mounted from host; R2 prefixes mount in-container)
 RUN mkdir -p /opt/chiridion /opt/chiridion-host-pi/skills /usr/local/lib/create-worker \
+    /workspace \
     /run/chiridion-r2 \
     /mnt/user-uploads /mnt/user-outputs && \
     chmod 0700 /run/chiridion-r2 && \
-    chown 1001:1001 /mnt/user-uploads /mnt/user-outputs
+    chown 1001:1001 /workspace /mnt/user-uploads /mnt/user-outputs
 
 # Playwright runtime support for generated apps and tests.
 RUN cd /opt/chiridion && \
@@ -97,7 +98,7 @@ ENV IPYTHONDIR=/opt/ipython
 COPY sandbox/ipython-startup/ /opt/ipython/profile_default/startup/
 RUN chown -R claude:claude /opt/ipython
 
-WORKDIR /home/claude
+WORKDIR /workspace
 
 EXPOSE 8080
 # Run under tini so Chromium/Playwright child processes are reaped correctly.

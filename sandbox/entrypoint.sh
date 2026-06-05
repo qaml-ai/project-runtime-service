@@ -43,4 +43,9 @@ if [ "${R2_MOUNT_ENABLED:-}" = "1" ]; then
   mount_r2_prefix "outputs" "/mnt/user-outputs" "${R2_OUTPUTS_PREFIX:-}" "${R2_OUTPUTS_CREDENTIALS_FILE:-}"
 fi
 
-exec su -m -s /bin/sh claude -c "HOME=/home/claude exec node -e \"require('http').createServer((req,res)=>{if(req.url==='/health'){res.writeHead(200,{'content-type':'application/json'});res.end('{\\\"status\\\":\\\"ok\\\"}');return;}res.writeHead(404,{'content-type':'application/json'});res.end('{\\\"error\\\":\\\"not found\\\"}');}).listen(8080,'0.0.0.0')\""
+runtime_home="${PROJECT_RUNTIME_CONTAINER_HOME:-${HOME:-/workspace}}"
+mkdir -p "$runtime_home"
+chown 1001:1001 "$runtime_home" || true
+export HOME="$runtime_home"
+
+exec su -m -s /bin/sh claude -c "exec node -e \"require('http').createServer((req,res)=>{if(req.url==='/health'){res.writeHead(200,{'content-type':'application/json'});res.end('{\\\"status\\\":\\\"ok\\\"}');return;}res.writeHead(404,{'content-type':'application/json'});res.end('{\\\"error\\\":\\\"not found\\\"}');}).listen(8080,'0.0.0.0')\""
