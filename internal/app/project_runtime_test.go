@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -236,7 +237,7 @@ func TestLegacyWorkspaceMigrationLockAndImport(t *testing.T) {
 		t.Fatalf("expected src/main.ts to be imported, err=%v got=%q", err, string(got))
 	}
 	if _, err := os.Stat(filepath.Join(projectRoot, ".git")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("expected .git to be skipped, err=%v", err)
+		t.Fatalf("expected empty .git to be removed, err=%v", err)
 	}
 	if got, err := os.ReadFile(filepath.Join(projectRoot, ".cache", "ignored.txt")); err != nil || string(got) != "skip" {
 		t.Fatalf("expected .cache file to be imported, err=%v got=%q", err, string(got))
@@ -247,6 +248,90 @@ func TestLegacyWorkspaceMigrationLockAndImport(t *testing.T) {
 	if got, err := os.ReadFile(filepath.Join(projectRoot, ".ipynb_checkpoints", "scratch.ipynb")); err != nil || string(got) != "skip" {
 		t.Fatalf("expected hidden checkpoint dir to be imported, err=%v got=%q", err, string(got))
 	}
+}
+
+func TestLegacyWorkspaceImportKeepsCommittedGitRepoWithExistingRemote(t *testing.T) {
+	root := t.TempDir()
+	workspacesRoot := filepath.Join(root, "workspaces")
+	workspaceManager := workspace.NewManager(workspace.ManagerConfig{WorkspacesRoot: workspacesRoot})
+	server := &Server{
+		containers:     container.NewTestManager(),
+		workspaces:     workspaceManager,
+		fs:             fsops.NewManager(workspacesRoot),
+		projectStates:  newProjectStateStore(filepath.Join(root, "state")),
+		migrationLocks: newMigrationLockStore(),
+	}
+
+	legacyRoot, err := workspaceManager.Ensure(sandboxName("legacy-ws"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repoRoot := filepath.Join(legacyRoot, "committed-app")
+	if err := os.MkdirAll(repoRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "package.json"), []byte(`{"scripts":{"build":"vite"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	legacyRemote := "https://legacy.example/repo.git"
+	runGit(t, repoRoot, "init")
+	runGit(t, repoRoot, "config", "user.name", "Legacy User")
+	runGit(t, repoRoot, "config", "user.email", "legacy@example.com")
+	runGit(t, repoRoot, "add", "package.json")
+	runGit(t, repoRoot, "commit", "-m", "Initial commit")
+	runGit(t, repoRoot, "remote", "add", "origin", legacyRemote)
+
+	serve := func(req *http.Request) *httptest.ResponseRecorder {
+		req.RemoteAddr = "127.0.0.1:1234"
+		rec := httptest.NewRecorder()
+		server.ServeHTTP(rec, req)
+		return rec
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/workspaces/org-1/legacy-ws/migration-lock", strings.NewReader(`{"workflowId":"workflow-1","ttlMs":60000}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := serve(req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected lock to succeed, got=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	importBody := `{"orgId":"org-1","workspaceId":"legacy-ws","sourcePaths":["/home/claude/committed-app"],"ignoreGlobs":[]}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/projects/new-project/legacy-import", strings.NewReader(importBody))
+	req.Header.Set("Content-Type", "application/json")
+	rec = serve(req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected import to succeed, got=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	projectRoot := filepath.Join(workspacesRoot, projectName("new-project"))
+	if _, err := os.Stat(filepath.Join(projectRoot, ".git")); err != nil {
+		t.Fatalf("expected committed .git to be imported, err=%v", err)
+	}
+	if output := runGitOutput(t, projectRoot, "rev-list", "--count", "--all"); strings.TrimSpace(output) != "1" {
+		t.Fatalf("expected one imported commit, got %q", output)
+	}
+	if output := runGitOutput(t, projectRoot, "remote", "get-url", "origin"); strings.TrimSpace(output) != legacyRemote {
+		t.Fatalf("expected origin to be preserved, got %q", output)
+	}
+}
+
+func runGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, string(output))
+	}
+}
+
+func runGitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, string(output))
+	}
+	return string(output)
 }
 
 func TestStaticCloudflareAPIProxySubpath(t *testing.T) {

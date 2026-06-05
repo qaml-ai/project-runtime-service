@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -74,6 +75,9 @@ func (s *Server) handleProjectLegacyImport(w http.ResponseWriter, req *http.Requ
 		result.Files += stats.Files
 		result.Bytes += stats.Bytes
 		result.SkippedPaths = append(result.SkippedPaths, stats.SkippedPaths...)
+	}
+	if err := reconcileImportedGitRepository(targetRoot); err != nil {
+		return err
 	}
 
 	writeJSON(w, http.StatusOK, result)
@@ -192,11 +196,6 @@ func copyLegacyImportFile(source, destination string, info os.FileInfo, stats *l
 
 func shouldSkipLegacyImportPath(rel string, ignoreGlobs []string) bool {
 	normalized := filepath.ToSlash(rel)
-	for _, part := range strings.Split(normalized, "/") {
-		if part == ".git" {
-			return true
-		}
-	}
 	for _, rawPattern := range ignoreGlobs {
 		pattern := strings.TrimSpace(filepath.ToSlash(rawPattern))
 		if pattern == "" {
@@ -221,4 +220,40 @@ func shouldSkipLegacyImportPath(rel string, ignoreGlobs []string) bool {
 		}
 	}
 	return false
+}
+
+func reconcileImportedGitRepository(projectRoot string) error {
+	gitDir := filepath.Join(projectRoot, ".git")
+	info, err := os.Lstat(gitDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return nil
+	}
+	hasCommits := gitCommand(projectRoot, "rev-parse", "--verify", "HEAD") == nil
+	hasRemotes := gitCommand(projectRoot, "remote") == nil && strings.TrimSpace(gitCommandOutput(projectRoot, "remote")) != ""
+	if !hasCommits || !hasRemotes {
+		return os.RemoveAll(gitDir)
+	}
+	return nil
+}
+
+func gitCommand(projectRoot string, args ...string) error {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = projectRoot
+	return cmd.Run()
+}
+
+func gitCommandOutput(projectRoot string, args ...string) string {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = projectRoot
+	output, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return string(output)
 }
