@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -168,6 +169,12 @@ func TestLegacyWorkspaceMigrationLockAndImport(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(legacyRoot, "web-app", "src", "main.ts"), []byte("console.log('hello')\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Join(legacyRoot, "web-app", ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyRoot, "web-app", ".git", "config"), []byte("[core]\nrepositoryformatversion = 0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(filepath.Join(legacyRoot, "web-app", ".cache"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -227,6 +234,9 @@ func TestLegacyWorkspaceMigrationLockAndImport(t *testing.T) {
 	}
 	if got, err := os.ReadFile(filepath.Join(projectRoot, "src", "main.ts")); err != nil || !strings.Contains(string(got), "hello") {
 		t.Fatalf("expected src/main.ts to be imported, err=%v got=%q", err, string(got))
+	}
+	if _, err := os.Stat(filepath.Join(projectRoot, ".git")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected .git to be skipped, err=%v", err)
 	}
 	if got, err := os.ReadFile(filepath.Join(projectRoot, ".cache", "ignored.txt")); err != nil || string(got) != "skip" {
 		t.Fatalf("expected .cache file to be imported, err=%v got=%q", err, string(got))
