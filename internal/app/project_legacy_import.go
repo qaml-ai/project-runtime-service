@@ -44,7 +44,7 @@ func (s *Server) handleProjectLegacyImport(w http.ResponseWriter, req *http.Requ
 		return nil
 	}
 
-	sourceRoot, err := s.workspaces.Ensure(sandboxName(workspaceID))
+	sourceRoot, err := s.legacyImportSourceRoot(workspaceID)
 	if err != nil {
 		return err
 	}
@@ -82,6 +82,33 @@ func (s *Server) handleProjectLegacyImport(w http.ResponseWriter, req *http.Requ
 
 	writeJSON(w, http.StatusOK, result)
 	return nil
+}
+
+func (s *Server) legacyImportSourceRoot(workspaceID string) (string, error) {
+	if strings.TrimSpace(s.cfg.LegacyWorkspacesRoot) == "" {
+		return s.workspaces.Ensure(sandboxName(workspaceID))
+	}
+	if strings.TrimSpace(workspaceID) == "" {
+		return "", errors.New("workspace id required")
+	}
+	cleanWorkspaceID := filepath.Clean(workspaceID)
+	if cleanWorkspaceID == "." || cleanWorkspaceID == ".." || strings.HasPrefix(cleanWorkspaceID, "../") || filepath.IsAbs(cleanWorkspaceID) {
+		return "", fmt.Errorf("invalid workspace id: %s", workspaceID)
+	}
+	name := s.cfg.LegacyWorkspacePrefix + cleanWorkspaceID
+	root := filepath.Join(s.cfg.LegacyWorkspacesRoot, name)
+	base, err := filepath.Abs(s.cfg.LegacyWorkspacesRoot)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.Abs(root)
+	if err != nil {
+		return "", err
+	}
+	if resolved != base && !strings.HasPrefix(resolved, base+string(os.PathSeparator)) {
+		return "", fmt.Errorf("invalid legacy workspace path: %s", workspaceID)
+	}
+	return resolved, nil
 }
 
 type legacyImportCopyStats struct {

@@ -21,6 +21,8 @@ type Config struct {
 	HostPiSessionRoot         string
 	UsageDBRoot               string
 	ProjectStateRoot          string
+	LegacyWorkspacesRoot      string
+	LegacyWorkspacePrefix     string
 	BackupRoot                string
 	BackupRetention           int
 	DiskReserveBytes          int64
@@ -74,6 +76,8 @@ func LoadConfig() Config {
 		HostPiSessionRoot:         envString("PROJECT_RUNTIME_PI_SESSION_ROOT", defaultHostPiSessionRoot()),
 		UsageDBRoot:               envString("PROJECT_RUNTIME_USAGE_DB_DIR", defaultUsageDBRoot()),
 		ProjectStateRoot:          envString("PROJECT_RUNTIME_STATE_ROOT", defaultProjectStateRoot()),
+		LegacyWorkspacesRoot:      envString("PROJECT_RUNTIME_LEGACY_WORKSPACES_ROOT", ""),
+		LegacyWorkspacePrefix:     envString("PROJECT_RUNTIME_LEGACY_WORKSPACE_PREFIX", "chiridion-ws-"),
 		BackupRoot:                envString("PROJECT_RUNTIME_BACKUP_ROOT", defaultBackupRoot()),
 		BackupRetention:           maxInt(1, envInt("PROJECT_RUNTIME_BACKUP_RETENTION", 5)),
 		DiskReserveBytes:          envInt64("PROJECT_RUNTIME_DISK_RESERVE_BYTES", 20*1024*1024*1024),

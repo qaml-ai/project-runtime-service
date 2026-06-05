@@ -148,8 +148,13 @@ func TestProxyCapabilityParsingAndHeaders(t *testing.T) {
 func TestLegacyWorkspaceMigrationLockAndImport(t *testing.T) {
 	root := t.TempDir()
 	workspacesRoot := filepath.Join(root, "workspaces")
+	legacyWorkspacesRoot := filepath.Join(root, "legacy-workspaces")
 	workspaceManager := workspace.NewManager(workspace.ManagerConfig{WorkspacesRoot: workspacesRoot})
 	server := &Server{
+		cfg: Config{
+			LegacyWorkspacesRoot:  legacyWorkspacesRoot,
+			LegacyWorkspacePrefix: "chiridion-ws-",
+		},
 		containers:     container.NewTestManager(),
 		workspaces:     workspaceManager,
 		fs:             fsops.NewManager(workspacesRoot),
@@ -157,8 +162,8 @@ func TestLegacyWorkspaceMigrationLockAndImport(t *testing.T) {
 		migrationLocks: newMigrationLockStore(),
 	}
 
-	legacyRoot, err := workspaceManager.Ensure(sandboxName("legacy-ws"))
-	if err != nil {
+	legacyRoot := filepath.Join(legacyWorkspacesRoot, "chiridion-ws-legacy-ws")
+	if err := os.MkdirAll(legacyRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(filepath.Join(legacyRoot, "web-app", "src"), 0o700); err != nil {
@@ -253,8 +258,13 @@ func TestLegacyWorkspaceMigrationLockAndImport(t *testing.T) {
 func TestLegacyWorkspaceImportKeepsCommittedGitRepoWithExistingRemote(t *testing.T) {
 	root := t.TempDir()
 	workspacesRoot := filepath.Join(root, "workspaces")
+	legacyWorkspacesRoot := filepath.Join(root, "legacy-workspaces")
 	workspaceManager := workspace.NewManager(workspace.ManagerConfig{WorkspacesRoot: workspacesRoot})
 	server := &Server{
+		cfg: Config{
+			LegacyWorkspacesRoot:  legacyWorkspacesRoot,
+			LegacyWorkspacePrefix: "chiridion-ws-",
+		},
 		containers:     container.NewTestManager(),
 		workspaces:     workspaceManager,
 		fs:             fsops.NewManager(workspacesRoot),
@@ -262,8 +272,8 @@ func TestLegacyWorkspaceImportKeepsCommittedGitRepoWithExistingRemote(t *testing
 		migrationLocks: newMigrationLockStore(),
 	}
 
-	legacyRoot, err := workspaceManager.Ensure(sandboxName("legacy-ws"))
-	if err != nil {
+	legacyRoot := filepath.Join(legacyWorkspacesRoot, "chiridion-ws-legacy-ws")
+	if err := os.MkdirAll(legacyRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	repoRoot := filepath.Join(legacyRoot, "committed-app")
