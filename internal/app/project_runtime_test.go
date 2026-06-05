@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/qaml-ai/project-runtime-service/internal/container"
+	"github.com/qaml-ai/project-runtime-service/internal/fsops"
 	"github.com/qaml-ai/project-runtime-service/internal/workspace"
 )
 
@@ -138,6 +140,102 @@ func TestProxyCapabilityParsingAndHeaders(t *testing.T) {
 	}
 	if target.Get("X-Keep") != "yes" {
 		t.Fatalf("expected normal header to be kept")
+	}
+}
+
+func TestLegacyWorkspaceMigrationLockAndImport(t *testing.T) {
+	root := t.TempDir()
+	workspacesRoot := filepath.Join(root, "workspaces")
+	workspaceManager := workspace.NewManager(workspace.ManagerConfig{WorkspacesRoot: workspacesRoot})
+	server := &Server{
+		containers:     container.NewTestManager(),
+		workspaces:     workspaceManager,
+		fs:             fsops.NewManager(workspacesRoot),
+		projectStates:  newProjectStateStore(filepath.Join(root, "state")),
+		migrationLocks: newMigrationLockStore(),
+	}
+
+	legacyRoot, err := workspaceManager.Ensure(sandboxName("legacy-ws"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(legacyRoot, "web-app", "src"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyRoot, "web-app", "package.json"), []byte(`{"scripts":{"build":"vite"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyRoot, "web-app", "src", "main.ts"), []byte("console.log('hello')\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(legacyRoot, "web-app", ".cache"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyRoot, "web-app", ".cache", "ignored.txt"), []byte("skip"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyRoot, "web-app", ".env"), []byte("SECRET=skip"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(legacyRoot, "web-app", ".ipynb_checkpoints"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyRoot, "web-app", ".ipynb_checkpoints", "scratch.ipynb"), []byte("skip"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	serve := func(req *http.Request) *httptest.ResponseRecorder {
+		req.RemoteAddr = "127.0.0.1:1234"
+		rec := httptest.NewRecorder()
+		server.ServeHTTP(rec, req)
+		return rec
+	}
+
+	importBody := `{"orgId":"org-1","workspaceId":"legacy-ws","sourcePaths":["/home/claude/web-app"],"ignoreGlobs":[]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/projects/new-project/legacy-import", strings.NewReader(importBody))
+	req.Header.Set("Content-Type", "application/json")
+	rec := serve(req)
+	if rec.Code != http.StatusPreconditionFailed {
+		t.Fatalf("expected import without lock to fail precondition, got=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/v1/workspaces/org-1/legacy-ws/migration-lock", strings.NewReader(`{"workflowId":"workflow-1","ttlMs":60000}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec = serve(req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected lock to succeed, got=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPut, "/v1/workspaces/org-1/legacy-ws/fs/write?path=/during-migration.txt", strings.NewReader("blocked"))
+	rec = serve(req)
+	if rec.Code != http.StatusLocked {
+		t.Fatalf("expected legacy workspace write to be locked, got=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/v1/projects/new-project/legacy-import", strings.NewReader(importBody))
+	req.Header.Set("Content-Type", "application/json")
+	rec = serve(req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected locked import to succeed, got=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"success":true`) {
+		t.Fatalf("expected success response, got %s", rec.Body.String())
+	}
+
+	projectRoot := filepath.Join(workspacesRoot, projectName("new-project"))
+	if got, err := os.ReadFile(filepath.Join(projectRoot, "package.json")); err != nil || !strings.Contains(string(got), "vite") {
+		t.Fatalf("expected package.json to be imported, err=%v got=%q", err, string(got))
+	}
+	if got, err := os.ReadFile(filepath.Join(projectRoot, "src", "main.ts")); err != nil || !strings.Contains(string(got), "hello") {
+		t.Fatalf("expected src/main.ts to be imported, err=%v got=%q", err, string(got))
+	}
+	if got, err := os.ReadFile(filepath.Join(projectRoot, ".cache", "ignored.txt")); err != nil || string(got) != "skip" {
+		t.Fatalf("expected .cache file to be imported, err=%v got=%q", err, string(got))
+	}
+	if got, err := os.ReadFile(filepath.Join(projectRoot, ".env")); err != nil || string(got) != "SECRET=skip" {
+		t.Fatalf("expected .env file to be imported, err=%v got=%q", err, string(got))
+	}
+	if got, err := os.ReadFile(filepath.Join(projectRoot, ".ipynb_checkpoints", "scratch.ipynb")); err != nil || string(got) != "skip" {
+		t.Fatalf("expected hidden checkpoint dir to be imported, err=%v got=%q", err, string(got))
 	}
 }
 

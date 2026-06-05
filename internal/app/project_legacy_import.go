@@ -191,17 +191,18 @@ func copyLegacyImportFile(source, destination string, info os.FileInfo, stats *l
 }
 
 func shouldSkipLegacyImportPath(rel string, ignoreGlobs []string) bool {
-	parts := strings.Split(filepath.ToSlash(rel), "/")
-	for _, part := range parts {
-		switch part {
-		case ".git", ".cache", ".wrangler":
-			return true
-		}
-	}
 	normalized := filepath.ToSlash(rel)
 	for _, rawPattern := range ignoreGlobs {
 		pattern := strings.TrimSpace(filepath.ToSlash(rawPattern))
 		if pattern == "" {
+			continue
+		}
+		if pattern == ".*" || pattern == ".*/**" {
+			for _, part := range strings.Split(normalized, "/") {
+				if strings.HasPrefix(part, ".") {
+					return true
+				}
+			}
 			continue
 		}
 		if strings.HasSuffix(pattern, "/**") {

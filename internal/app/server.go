@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -67,6 +68,9 @@ func NewServer(cfg Config, containers *container.Manager, workspaces *workspace.
 		ExpectContinueTimeout: 1 * time.Second,
 		DisableCompression:    true,
 	}
+	if tlsConfig := outboundProxyTLSConfig(cfg); tlsConfig != nil {
+		transport.TLSClientConfig = tlsConfig
+	}
 
 	s := &Server{
 		cfg:               cfg,
@@ -88,6 +92,25 @@ func NewServer(cfg Config, containers *container.Manager, workspaces *workspace.
 	s.startArchiveSweeper()
 
 	return s
+}
+
+func outboundProxyTLSConfig(cfg Config) *tls.Config {
+	certFile := strings.TrimSpace(cfg.ProxyMTLSClientCertFile)
+	keyFile := strings.TrimSpace(cfg.ProxyMTLSClientKeyFile)
+	if certFile == "" && keyFile == "" {
+		return nil
+	}
+	if certFile == "" || keyFile == "" {
+		log.Fatalf("[ProjectRuntime] PROJECT_RUNTIME_MTLS_CLIENT_CERT_FILE and PROJECT_RUNTIME_MTLS_CLIENT_KEY_FILE must both be set")
+	}
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		log.Fatalf("[ProjectRuntime] failed to load outbound mTLS client certificate: %v", err)
+	}
+	return &tls.Config{
+		MinVersion:   tls.VersionTLS12,
+		Certificates: []tls.Certificate{cert},
+	}
 }
 
 func (s *Server) startArchiveSweeper() {

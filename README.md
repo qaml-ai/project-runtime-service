@@ -203,6 +203,16 @@ CONTROL_PLANE_TLS_CLIENT_CA_FILE=/etc/project-runtime/client-ca.crt
 Setting TLS files makes the control listener serve HTTPS. When a client CA file is configured,
 the listener requires and verifies client certificates.
 
+Outbound mTLS for Worker proxy callbacks:
+
+```bash
+PROJECT_RUNTIME_MTLS_CLIENT_CERT_FILE=/etc/qaml-project-runtime/mtls/client.crt
+PROJECT_RUNTIME_MTLS_CLIENT_KEY_FILE=/etc/qaml-project-runtime/mtls/client.key
+```
+
+When these are set, runtime-originated HTTPS calls to configured proxy capabilities
+and deploy/artifacts endpoints present the client certificate.
+
 ## Local development
 
 Requires Go 1.24+ and Docker.
