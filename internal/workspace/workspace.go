@@ -285,8 +285,16 @@ func ensureWorkspaceOwner(path string) error {
 	if runtime.GOOS != "linux" || os.Geteuid() != 0 {
 		return nil
 	}
-	if err := os.Chown(path, 1001, 1001); err != nil {
-		return fmt.Errorf("set workspace owner: %w", err)
+	if err := filepath.WalkDir(path, func(current string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if err := os.Lchown(current, 1001, 1001); err != nil {
+			return fmt.Errorf("set workspace owner for %s: %w", current, err)
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("set workspace tree owner: %w", err)
 	}
 	if err := os.Chmod(path, 0o700); err != nil {
 		return fmt.Errorf("set workspace mode: %w", err)
