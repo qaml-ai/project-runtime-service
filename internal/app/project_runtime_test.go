@@ -85,6 +85,68 @@ func TestForwardProjectCloudflareAPIProxyRequest(t *testing.T) {
 	}
 }
 
+func TestForwardProjectCloudflareAPIProxyRequestAllowsMTLSOnlyAuth(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path != "/client/v4/accounts/acct" {
+			t.Fatalf("unexpected upstream path: %s", req.URL.Path)
+		}
+		if req.Header.Get("X-Project-Runtime-Secret") != "" {
+			t.Fatalf("unexpected project runtime secret header: %q", req.Header.Get("X-Project-Runtime-Secret"))
+		}
+		if req.Header.Get("X-Chiridion-Project-Id") != "pizza-delivery" {
+			t.Fatalf("missing project forwarding header: %q", req.Header.Get("X-Chiridion-Project-Id"))
+		}
+		_, _ = w.Write([]byte(`{"success":true}`))
+	}))
+	defer upstream.Close()
+
+	server := &Server{
+		cfg: Config{
+			WorkerBaseURL:           upstream.URL,
+			ProxyMTLSClientCertFile: "/etc/qaml-project-runtime/mtls/client.crt",
+			ProxyMTLSClientKeyFile:  "/etc/qaml-project-runtime/mtls/client.key",
+		},
+		httpClient: &http.Client{Timeout: 10 * time.Second},
+	}
+	route := trustedProxyRoute{
+		Name:      "project-runtime-pizza",
+		ProjectID: "pizza-delivery",
+		Subpath:   "/client/v4/accounts/acct",
+	}
+	req := httptest.NewRequest(http.MethodGet, "/deploy/client/v4/accounts/acct", nil)
+	rec := httptest.NewRecorder()
+
+	if err := server.forwardCloudflareAPIProxyRequest(rec, req, route); err != nil {
+		t.Fatalf("forwardCloudflareAPIProxyRequest failed: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got=%d want=%d", rec.Code, http.StatusOK)
+	}
+}
+
+func TestForwardProjectCloudflareAPIProxyRequestRequiresAuthConfig(t *testing.T) {
+	server := &Server{
+		cfg: Config{
+			WorkerBaseURL: "https://example.com",
+		},
+		httpClient: &http.Client{Timeout: 10 * time.Second},
+	}
+	route := trustedProxyRoute{
+		Name:      "project-runtime-pizza",
+		ProjectID: "pizza-delivery",
+		Subpath:   "/client/v4/accounts/acct",
+	}
+	req := httptest.NewRequest(http.MethodGet, "/deploy/client/v4/accounts/acct", nil)
+	rec := httptest.NewRecorder()
+
+	if err := server.forwardCloudflareAPIProxyRequest(rec, req, route); err != nil {
+		t.Fatalf("forwardCloudflareAPIProxyRequest failed: %v", err)
+	}
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("unexpected status: got=%d want=%d", rec.Code, http.StatusServiceUnavailable)
+	}
+}
+
 func TestBearerControlAuth(t *testing.T) {
 	server := &Server{cfg: Config{ControlAuthType: "bearer", ControlBearerToken: "secret"}}
 	req := httptest.NewRequest(http.MethodGet, "/v1/host/capabilities", nil)

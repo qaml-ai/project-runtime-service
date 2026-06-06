@@ -610,7 +610,7 @@ func (s *Server) forwardCloudflareAPIProxyRequest(w http.ResponseWriter, req *ht
 		return nil
 	}
 	secret := strings.TrimSpace(s.cfg.ProjectRuntimeProxySecret)
-	if secret == "" {
+	if secret == "" && !s.hasOutboundProxyMTLS() {
 		errorJSON(w, "Cloudflare API proxy auth not configured", http.StatusServiceUnavailable)
 		return nil
 	}
@@ -644,6 +644,11 @@ func (s *Server) forwardCloudflareAPIProxyRequest(w http.ResponseWriter, req *ht
 		return err
 	}
 	return nil
+}
+
+func (s *Server) hasOutboundProxyMTLS() bool {
+	return strings.TrimSpace(s.cfg.ProxyMTLSClientCertFile) != "" &&
+		strings.TrimSpace(s.cfg.ProxyMTLSClientKeyFile) != ""
 }
 
 func (s *Server) forwardDataProxyRequest(w http.ResponseWriter, req *http.Request, route WorkspaceRoute) error {
