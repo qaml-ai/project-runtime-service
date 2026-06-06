@@ -96,6 +96,20 @@ func TestLegacyWorkspaceMigrationDiscoveryFindsWorkerAppsWithPrunes(t *testing.T
 	}
 }
 
+func TestLegacyWorkspaceMigrationDiscoveryRequiresLegacyRoot(t *testing.T) {
+	server := &Server{}
+	req := httptest.NewRequest(http.MethodGet, "/v1/workspaces/org-1/legacy-ws/migration-discovery", nil)
+	rec := httptest.NewRecorder()
+
+	err := server.handleWorkspaceMigrationDiscovery(rec, req, WorkspaceRoute{OrgID: "org-1", WorkspaceID: "legacy-ws"})
+	if err == nil {
+		t.Fatal("expected missing legacy root to fail")
+	}
+	if !strings.Contains(err.Error(), "PROJECT_RUNTIME_LEGACY_WORKSPACES_ROOT") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestForwardProjectCloudflareAPIProxyRequest(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if req.URL.Path != "/client/v4/accounts/acct" {

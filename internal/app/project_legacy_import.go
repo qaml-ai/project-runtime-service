@@ -111,7 +111,7 @@ func (s *Server) handleProjectLegacyImport(w http.ResponseWriter, req *http.Requ
 
 func (s *Server) legacyImportSourceRoot(workspaceID string) (string, error) {
 	if strings.TrimSpace(s.cfg.LegacyWorkspacesRoot) == "" {
-		return s.workspaces.Ensure(sandboxName(workspaceID))
+		return "", errors.New("PROJECT_RUNTIME_LEGACY_WORKSPACES_ROOT is required for legacy workspace migration")
 	}
 	if strings.TrimSpace(workspaceID) == "" {
 		return "", errors.New("workspace id required")
