@@ -37,6 +37,7 @@ type Config struct {
 	ObjectStoreSecretKey      string
 	ObjectStorePathStyle      bool
 	ProxyCapabilitiesFile     string
+	ProxyCapabilitiesJSON     string
 	ProxyMTLSClientCertFile   string
 	ProxyMTLSClientKeyFile    string
 	DataProxyUpstreamURL      string
@@ -92,6 +93,7 @@ func LoadConfig() Config {
 		ObjectStoreSecretKey:      envString("PROJECT_RUNTIME_OBJECT_SECRET_ACCESS_KEY", ""),
 		ObjectStorePathStyle:      envBool("PROJECT_RUNTIME_OBJECT_PATH_STYLE", true),
 		ProxyCapabilitiesFile:     envString("PROJECT_RUNTIME_PROXY_CAPABILITIES_FILE", defaultProxyCapabilitiesFile()),
+		ProxyCapabilitiesJSON:     envString("PROJECT_RUNTIME_PROXY_CAPABILITIES_JSON", ""),
 		ProxyMTLSClientCertFile:   envString("PROJECT_RUNTIME_MTLS_CLIENT_CERT_FILE", ""),
 		ProxyMTLSClientKeyFile:    envString("PROJECT_RUNTIME_MTLS_CLIENT_KEY_FILE", ""),
 		DataProxyUpstreamURL:      envString("DATA_PROXY_UPSTREAM_URL", "http://127.0.0.1:"+strconv.Itoa(dataProxyPort)),

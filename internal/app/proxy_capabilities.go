@@ -24,6 +24,11 @@ type proxyCapabilityConfig struct {
 }
 
 func loadProxyCapabilities(cfg Config) map[string]ProxyCapability {
+	raw := strings.TrimSpace(cfg.ProxyCapabilitiesJSON)
+	if raw != "" {
+		return parseProxyCapabilities(raw)
+	}
+
 	file := strings.TrimSpace(cfg.ProxyCapabilitiesFile)
 	if file == "" {
 		return map[string]ProxyCapability{}
@@ -35,11 +40,14 @@ func loadProxyCapabilities(cfg Config) map[string]ProxyCapability {
 		}
 		return map[string]ProxyCapability{}
 	}
-	raw := strings.TrimSpace(string(content))
+	raw = strings.TrimSpace(string(content))
 	if raw == "" {
 		return map[string]ProxyCapability{}
 	}
+	return parseProxyCapabilities(raw)
+}
 
+func parseProxyCapabilities(raw string) map[string]ProxyCapability {
 	var parsed proxyCapabilityConfig
 	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
 		log.Printf("[ProjectRuntime] failed to parse proxy capabilities: %v", err)

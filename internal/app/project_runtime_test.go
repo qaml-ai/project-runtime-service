@@ -265,6 +265,32 @@ func TestProxyCapabilityParsingAndHeaders(t *testing.T) {
 	}
 }
 
+func TestProxyCapabilityParsingFromJSONConfig(t *testing.T) {
+	cfg := Config{
+		ProxyCapabilitiesJSON: `{
+			"capabilities": [
+				{
+					"name": "camelai-artifacts",
+					"target": "https://staging.camelai.dev/api/internal/project-runtime/artifacts",
+					"headers": {"X-Project-Runtime-Secret": "secret"}
+				}
+			]
+		}`,
+	}
+
+	capabilities := loadProxyCapabilities(cfg)
+	capability, ok := capabilities["camelai-artifacts"]
+	if !ok {
+		t.Fatal("expected camelai-artifacts capability")
+	}
+	if capability.Target != "https://staging.camelai.dev/api/internal/project-runtime/artifacts" {
+		t.Fatalf("unexpected target: %q", capability.Target)
+	}
+	if capability.Headers["X-Project-Runtime-Secret"] != "secret" {
+		t.Fatalf("expected proxy secret header, got %+v", capability.Headers)
+	}
+}
+
 func TestLegacyWorkspaceMigrationLockAndImport(t *testing.T) {
 	root := t.TempDir()
 	workspacesRoot := filepath.Join(root, "workspaces")
