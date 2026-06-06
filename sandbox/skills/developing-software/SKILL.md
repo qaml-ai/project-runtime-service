@@ -105,20 +105,24 @@ bun wrangler tail
 After deploying a worker, use MCP tools to verify the deployment and get the live URL:
 
 1. **Get the deployed app URL** - Use the `list_apps` MCP tool to retrieve the URL of deployed workers
-2. **Take a screenshot** - Use the `take_screenshot` MCP tool (local Playwright) with the full URL to capture the deployed app and verify it looks correct
+2. **Set the active preview** - Always call `set_preview` for the newly deployed app so the user immediately sees the live site in the chat preview pane
+3. **Take a screenshot** - Use the `take_screenshot` MCP tool (local Playwright) with the full URL to capture the deployed app and verify it looks correct
 
 ```bash
 # Example workflow after bun run deploy
 # 1. List apps to get the URL
 #    → Use MCP tool: list_apps
 
-# 2. Take a screenshot to verify the UI
+# 2. Set the deployed app as the active preview
+#    → Use MCP tool: set_preview with the deployed script/app name
+
+# 3. Take a screenshot to verify the UI
 #    → Use MCP tool: take_screenshot with the app URL from step 1
 ```
 
 The `take_screenshot` tool runs Playwright locally inside the container for fast, reliable screenshots. It accepts a full URL and optional viewport dimensions (`width`, `height`) and `wait_for_timeout` (extra ms to wait after page load).
 
-This ensures the deployment succeeded and the app renders correctly before sharing the URL with the user.
+This ensures the user can inspect the newly deployed app in the preview pane, the deployment succeeded, and the app renders correctly before sharing the URL with the user.
 
 ## Durable Objects with SQLite Storage
 
