@@ -332,6 +332,9 @@ func (s *Server) handleWorkspaceRoute(w http.ResponseWriter, req *http.Request, 
 	if route.Subpath == "/migration-lock" {
 		return s.handleWorkspaceMigrationLock(w, req, route)
 	}
+	if route.Subpath == "/migration-discovery" && req.Method == http.MethodGet {
+		return s.handleWorkspaceMigrationDiscovery(w, req, route)
+	}
 	if s.rejectLockedLegacyWorkspaceMutation(w, req, route) {
 		return nil
 	}

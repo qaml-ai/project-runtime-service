@@ -3,13 +3,16 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -35,6 +38,61 @@ func TestParseProjectRoute(t *testing.T) {
 	}
 	if route.ID != "pizza-delivery" || route.Name != "project-pizza-delivery" || route.Subpath != "/fs/read" {
 		t.Fatalf("unexpected route: %+v", route)
+	}
+}
+
+func TestLegacyWorkspaceMigrationDiscoveryFindsWorkerAppsWithPrunes(t *testing.T) {
+	root := t.TempDir()
+	legacyWorkspacesRoot := filepath.Join(root, "legacy-workspaces")
+	legacyRoot := filepath.Join(legacyWorkspacesRoot, "chiridion-ws-legacy-ws")
+	for _, dir := range []string{
+		filepath.Join(legacyRoot, "projects", "hello-world"),
+		filepath.Join(legacyRoot, "projects", "sf-muni"),
+		filepath.Join(legacyRoot, "projects", "node_modules", "fake-worker"),
+		filepath.Join(legacyRoot, "app", "build", "fake-worker"),
+	} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, file := range []string{
+		filepath.Join(legacyRoot, "projects", "hello-world", "wrangler.jsonc"),
+		filepath.Join(legacyRoot, "projects", "sf-muni", "wrangler.toml"),
+		filepath.Join(legacyRoot, "projects", "node_modules", "fake-worker", "wrangler.jsonc"),
+		filepath.Join(legacyRoot, "app", "build", "fake-worker", "wrangler.jsonc"),
+	} {
+		if err := os.WriteFile(file, []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	server := &Server{
+		cfg: Config{
+			LegacyWorkspacesRoot:  legacyWorkspacesRoot,
+			LegacyWorkspacePrefix: "chiridion-ws-",
+		},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/v1/workspaces/org-1/legacy-ws/migration-discovery", nil)
+	rec := httptest.NewRecorder()
+
+	if err := server.handleWorkspaceMigrationDiscovery(rec, req, WorkspaceRoute{OrgID: "org-1", WorkspaceID: "legacy-ws"}); err != nil {
+		t.Fatalf("handleWorkspaceMigrationDiscovery failed: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Files            []fsops.Entry `json:"files"`
+		NestedWorkerApps []string      `json:"nestedWorkerApps"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := payload.NestedWorkerApps, []string{"/home/claude/projects/hello-world", "/home/claude/projects/sf-muni"}; !slices.Equal(got, want) {
+		t.Fatalf("nested worker apps mismatch: got=%v want=%v", got, want)
+	}
+	if len(payload.Files) == 0 || payload.Files[0].RelativePath == "" {
+		t.Fatalf("expected top-level files with relative paths, got=%+v", payload.Files)
 	}
 }
 
@@ -383,6 +441,84 @@ func TestLegacyWorkspaceImportKeepsCommittedGitRepoWithExistingRemote(t *testing
 	}
 	if output := runGitOutput(t, projectRoot, "remote", "get-url", "origin"); strings.TrimSpace(output) != legacyRemote {
 		t.Fatalf("expected origin to be preserved, got %q", output)
+	}
+}
+
+func TestLegacyWorkspaceImportConfiguresArtifactRemote(t *testing.T) {
+	root := t.TempDir()
+	workspacesRoot := filepath.Join(root, "workspaces")
+	legacyWorkspacesRoot := filepath.Join(root, "legacy-workspaces")
+	workspaceManager := workspace.NewManager(workspace.ManagerConfig{WorkspacesRoot: workspacesRoot})
+	server := &Server{
+		cfg: Config{
+			LegacyWorkspacesRoot:  legacyWorkspacesRoot,
+			LegacyWorkspacePrefix: "chiridion-ws-",
+		},
+		containers:     container.NewTestManager(),
+		workspaces:     workspaceManager,
+		fs:             fsops.NewManager(workspacesRoot),
+		projectStates:  newProjectStateStore(filepath.Join(root, "state")),
+		migrationLocks: newMigrationLockStore(),
+	}
+
+	legacyRoot := filepath.Join(legacyWorkspacesRoot, "chiridion-ws-legacy-ws")
+	repoRoot := filepath.Join(legacyRoot, "committed-app")
+	if err := os.MkdirAll(filepath.Join(repoRoot, ".bun", "install", "cache"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "package.json"), []byte(`{"scripts":{"build":"vite"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, ".bun", "install", "cache", "junk"), []byte("cache"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repoRoot, "init")
+	runGit(t, repoRoot, "config", "user.name", "Legacy User")
+	runGit(t, repoRoot, "config", "user.email", "legacy@example.com")
+	runGit(t, repoRoot, "add", "package.json")
+	runGit(t, repoRoot, "commit", "-m", "Initial commit")
+	runGit(t, repoRoot, "remote", "add", "origin", "https://legacy.example/repo.git")
+
+	serve := func(req *http.Request) *httptest.ResponseRecorder {
+		req.RemoteAddr = "127.0.0.1:1234"
+		rec := httptest.NewRecorder()
+		server.ServeHTTP(rec, req)
+		return rec
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/workspaces/org-1/legacy-ws/migration-lock", strings.NewReader(`{"workflowId":"workflow-1","ttlMs":60000}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := serve(req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected lock to succeed, got=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	artifactRemote := "http://host.docker.internal:8089/p/camelai-artifacts/git/origin.git"
+	importBody := fmt.Sprintf(
+		`{"orgId":"org-1","workspaceId":"legacy-ws","sourcePaths":["/home/claude/committed-app"],"ignoreGlobs":[],"gitRemote":%q,"gitBranch":"main"}`,
+		artifactRemote,
+	)
+	req = httptest.NewRequest(http.MethodPost, "/v1/projects/new-project/legacy-import", strings.NewReader(importBody))
+	req.Header.Set("Content-Type", "application/json")
+	rec = serve(req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected import to succeed, got=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	projectRoot := filepath.Join(workspacesRoot, projectName("new-project"))
+	if output := runGitOutput(t, projectRoot, "rev-list", "--count", "--all"); strings.TrimSpace(output) != "1" {
+		t.Fatalf("expected one imported commit, got %q", output)
+	}
+	if output := runGitOutput(t, projectRoot, "remote", "get-url", "origin"); strings.TrimSpace(output) != artifactRemote {
+		t.Fatalf("expected origin to be retargeted, got %q", output)
+	}
+	gitignore, err := os.ReadFile(filepath.Join(projectRoot, ".gitignore"))
+	if err != nil {
+		t.Fatalf("expected .gitignore to be written: %v", err)
+	}
+	for _, pattern := range []string{".bun/install/cache/", ".EasyOCR/", ".cache/"} {
+		if !strings.Contains(string(gitignore), pattern) {
+			t.Fatalf("expected .gitignore to contain %q, got %q", pattern, string(gitignore))
+		}
 	}
 }
 

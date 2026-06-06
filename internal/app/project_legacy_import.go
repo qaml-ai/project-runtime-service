@@ -28,6 +28,8 @@ func (s *Server) handleProjectLegacyImport(w http.ResponseWriter, req *http.Requ
 		WorkspaceID string   `json:"workspaceId"`
 		SourcePaths []string `json:"sourcePaths"`
 		IgnoreGlobs []string `json:"ignoreGlobs"`
+		GitRemote   string   `json:"gitRemote"`
+		GitBranch   string   `json:"gitBranch"`
 	}
 	if err := decodeJSON(req, &payload); err != nil {
 		errorJSON(w, "invalid JSON body", http.StatusBadRequest)
@@ -94,6 +96,9 @@ func (s *Server) handleProjectLegacyImport(w http.ResponseWriter, req *http.Requ
 	result.Files += copyStats.Files
 	result.Bytes += copyStats.Bytes
 	if err := reconcileImportedGitRepository(stagingRoot); err != nil {
+		return err
+	}
+	if err := configureImportedGitRepository(stagingRoot, payload.GitRemote, payload.GitBranch); err != nil {
 		return err
 	}
 	if err := publishLegacyImportStagingRoot(targetRoot, stagingRoot); err != nil {
@@ -392,6 +397,90 @@ func reconcileImportedGitRepository(projectRoot string) error {
 		return os.RemoveAll(gitDir)
 	}
 	return nil
+}
+
+func configureImportedGitRepository(projectRoot, remote, branch string) error {
+	if err := ensureImportedGitignore(projectRoot); err != nil {
+		return err
+	}
+	remote = strings.TrimSpace(remote)
+	if remote == "" {
+		return nil
+	}
+	if err := ensureGitRepository(projectRoot, branch); err != nil {
+		return err
+	}
+	if err := gitCommand(projectRoot, "config", "user.name", "camelAI Agent"); err != nil {
+		return err
+	}
+	if err := gitCommand(projectRoot, "config", "user.email", "agent@camelai.dev"); err != nil {
+		return err
+	}
+	_ = gitCommand(projectRoot, "config", "--global", "--add", "safe.directory", projectRoot)
+	if gitCommand(projectRoot, "remote", "get-url", "origin") == nil {
+		return gitCommand(projectRoot, "remote", "set-url", "origin", remote)
+	}
+	return gitCommand(projectRoot, "remote", "add", "origin", remote)
+}
+
+func ensureGitRepository(projectRoot, branch string) error {
+	if info, err := os.Stat(filepath.Join(projectRoot, ".git")); err == nil && info.IsDir() {
+		return nil
+	}
+	branch = strings.TrimSpace(branch)
+	if branch == "" {
+		branch = "main"
+	}
+	if err := gitCommand(projectRoot, "init", "-b", branch); err == nil {
+		return nil
+	}
+	return gitCommand(projectRoot, "init")
+}
+
+func ensureImportedGitignore(projectRoot string) error {
+	path := filepath.Join(projectRoot, ".gitignore")
+	existingBytes, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	existing := string(existingBytes)
+	lines := map[string]bool{}
+	for _, line := range strings.Split(existing, "\n") {
+		lines[strings.TrimSpace(line)] = true
+	}
+	var additions []string
+	for _, pattern := range defaultImportedGitignorePatterns {
+		if !lines[pattern] {
+			additions = append(additions, pattern)
+		}
+	}
+	if len(additions) == 0 {
+		return nil
+	}
+	var builder strings.Builder
+	builder.WriteString(existing)
+	if existing != "" && !strings.HasSuffix(existing, "\n") {
+		builder.WriteString("\n")
+	}
+	for _, pattern := range additions {
+		builder.WriteString(pattern)
+		builder.WriteString("\n")
+	}
+	return os.WriteFile(path, []byte(builder.String()), 0o600)
+}
+
+var defaultImportedGitignorePatterns = []string{
+	"node_modules/",
+	".bun/install/cache/",
+	".EasyOCR/",
+	".cache/",
+	".ipynb_checkpoints/",
+	".wrangler/",
+	".dev.vars",
+	"*.log",
+	"dist/",
+	"build/",
+	"coverage/",
 }
 
 func gitCommand(projectRoot string, args ...string) error {
