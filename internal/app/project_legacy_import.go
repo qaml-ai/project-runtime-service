@@ -9,7 +9,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 )
+
+const legacyImportCopyConcurrency = 32
 
 type legacyImportResult struct {
 	Success      bool     `json:"success"`
@@ -52,9 +56,17 @@ func (s *Server) handleProjectLegacyImport(w http.ResponseWriter, req *http.Requ
 	if err != nil {
 		return err
 	}
+	if err := clearLegacyImportTarget(targetRoot); err != nil {
+		return fmt.Errorf("clear legacy import target: %w", err)
+	}
+	stagingRoot, err := createLegacyImportStagingRoot(targetRoot)
+	if err != nil {
+		return err
+	}
 
 	result := legacyImportResult{Success: true}
 	singleSource := len(payload.SourcePaths) == 1
+	var tasks []legacyImportCopyTask
 	for _, sourcePath := range payload.SourcePaths {
 		sourceHostPath, err := legacyWorkspaceHostPath(sourceRoot, sourcePath)
 		if err != nil {
@@ -64,19 +76,27 @@ func (s *Server) handleProjectLegacyImport(w http.ResponseWriter, req *http.Requ
 		if err != nil {
 			return fmt.Errorf("stat legacy import source %s: %w", sourcePath, err)
 		}
-		destination := targetRoot
+		destination := stagingRoot
 		if !singleSource || !info.IsDir() {
-			destination = filepath.Join(targetRoot, filepath.Base(sourceHostPath))
+			destination = filepath.Join(stagingRoot, filepath.Base(sourceHostPath))
 		}
-		stats, err := copyLegacyImportPath(sourceHostPath, destination, payload.IgnoreGlobs)
+		stats, sourceTasks, err := planLegacyImportPath(sourceHostPath, destination, payload.IgnoreGlobs)
 		if err != nil {
 			return err
 		}
-		result.Files += stats.Files
-		result.Bytes += stats.Bytes
 		result.SkippedPaths = append(result.SkippedPaths, stats.SkippedPaths...)
+		tasks = append(tasks, sourceTasks...)
 	}
-	if err := reconcileImportedGitRepository(targetRoot); err != nil {
+	copyStats, err := copyLegacyImportTasks(tasks)
+	if err != nil {
+		return err
+	}
+	result.Files += copyStats.Files
+	result.Bytes += copyStats.Bytes
+	if err := reconcileImportedGitRepository(stagingRoot); err != nil {
+		return err
+	}
+	if err := publishLegacyImportStagingRoot(targetRoot, stagingRoot); err != nil {
 		return err
 	}
 
@@ -117,6 +137,12 @@ type legacyImportCopyStats struct {
 	SkippedPaths []string
 }
 
+type legacyImportCopyTask struct {
+	Source      string
+	Destination string
+	Info        os.FileInfo
+}
+
 func legacyWorkspaceHostPath(root, sandboxPath string) (string, error) {
 	path := strings.TrimSpace(sandboxPath)
 	if path == "" {
@@ -134,20 +160,52 @@ func legacyWorkspaceHostPath(root, sandboxPath string) (string, error) {
 	return filepath.Join(root, cleaned), nil
 }
 
-func copyLegacyImportPath(source, destination string, ignoreGlobs []string) (legacyImportCopyStats, error) {
+func clearLegacyImportTarget(targetRoot string) error {
+	entries, err := os.ReadDir(targetRoot)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if err := os.RemoveAll(filepath.Join(targetRoot, entry.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func createLegacyImportStagingRoot(targetRoot string) (string, error) {
+	stagingRoot := filepath.Join(targetRoot, fmt.Sprintf(".legacy-import-staging-%d", time.Now().UnixNano()))
+	if err := os.MkdirAll(stagingRoot, 0o700); err != nil {
+		return "", err
+	}
+	return stagingRoot, nil
+}
+
+func publishLegacyImportStagingRoot(targetRoot, stagingRoot string) error {
+	entries, err := os.ReadDir(stagingRoot)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if err := os.Rename(filepath.Join(stagingRoot, entry.Name()), filepath.Join(targetRoot, entry.Name())); err != nil {
+			return err
+		}
+	}
+	return os.Remove(stagingRoot)
+}
+
+func planLegacyImportPath(source, destination string, ignoreGlobs []string) (legacyImportCopyStats, []legacyImportCopyTask, error) {
 	var stats legacyImportCopyStats
+	var tasks []legacyImportCopyTask
 	info, err := os.Lstat(source)
 	if err != nil {
-		return stats, err
+		return stats, nil, err
 	}
 	if !info.IsDir() {
-		if err := copyLegacyImportFile(source, destination, info, &stats); err != nil {
-			return stats, err
-		}
-		return stats, nil
+		return stats, []legacyImportCopyTask{{Source: source, Destination: destination, Info: info}}, nil
 	}
 	if err := os.MkdirAll(destination, info.Mode().Perm()); err != nil {
-		return stats, err
+		return stats, nil, err
 	}
 	err = filepath.WalkDir(source, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -175,50 +233,117 @@ func copyLegacyImportPath(source, destination string, ignoreGlobs []string) (leg
 		if entry.IsDir() {
 			return os.MkdirAll(target, info.Mode().Perm())
 		}
-		return copyLegacyImportFile(path, target, info, &stats)
+		tasks = append(tasks, legacyImportCopyTask{Source: path, Destination: target, Info: info})
+		return nil
 	})
-	return stats, err
+	return stats, tasks, err
 }
 
-func copyLegacyImportFile(source, destination string, info os.FileInfo, stats *legacyImportCopyStats) error {
+func copyLegacyImportTasks(tasks []legacyImportCopyTask) (legacyImportCopyStats, error) {
+	var stats legacyImportCopyStats
+	if len(tasks) == 0 {
+		return stats, nil
+	}
+
+	workerCount := legacyImportCopyConcurrency
+	if len(tasks) < workerCount {
+		workerCount = len(tasks)
+	}
+	taskCh := make(chan legacyImportCopyTask)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var firstErr error
+
+	setErr := func(err error) {
+		if err == nil {
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	hasErr := func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return firstErr != nil
+	}
+
+	for i := 0; i < workerCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for task := range taskCh {
+				if hasErr() {
+					continue
+				}
+				files, bytes, err := copyLegacyImportFile(task.Source, task.Destination, task.Info)
+				if err != nil {
+					setErr(err)
+					continue
+				}
+				mu.Lock()
+				stats.Files += files
+				stats.Bytes += bytes
+				mu.Unlock()
+			}
+		}()
+	}
+
+	for _, task := range tasks {
+		taskCh <- task
+	}
+	close(taskCh)
+	wg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if firstErr != nil {
+		return stats, firstErr
+	}
+	return stats, nil
+}
+
+func copyLegacyImportFile(source, destination string, info os.FileInfo) (int64, int64, error) {
 	if info.Mode()&os.ModeSymlink != 0 {
 		target, err := os.Readlink(source)
 		if err != nil {
-			return err
+			return 0, 0, err
+		}
+		if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
+			return 0, 0, err
 		}
 		_ = os.Remove(destination)
 		if err := os.Symlink(target, destination); err != nil {
-			return err
+			return 0, 0, err
 		}
-		stats.Files++
-		return nil
+		return 1, 0, nil
 	}
 	if !info.Mode().IsRegular() {
-		return nil
+		return 0, 0, nil
 	}
 	if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
-		return err
+		return 0, 0, err
 	}
 	input, err := os.Open(source)
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
 	defer input.Close()
 	output, err := os.OpenFile(destination, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode().Perm())
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
 	written, copyErr := io.Copy(output, input)
 	closeErr := output.Close()
 	if copyErr != nil {
-		return copyErr
+		return 0, 0, copyErr
 	}
 	if closeErr != nil {
-		return closeErr
+		return 0, 0, closeErr
 	}
-	stats.Files++
-	stats.Bytes += written
-	return nil
+	return 1, written, nil
 }
 
 func shouldSkipLegacyImportPath(rel string, ignoreGlobs []string) bool {

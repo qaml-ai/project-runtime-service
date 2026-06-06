@@ -386,6 +386,81 @@ func TestLegacyWorkspaceImportKeepsCommittedGitRepoWithExistingRemote(t *testing
 	}
 }
 
+func TestLegacyWorkspaceImportReplacesExistingProjectContentsOnRetry(t *testing.T) {
+	root := t.TempDir()
+	workspacesRoot := filepath.Join(root, "workspaces")
+	legacyWorkspacesRoot := filepath.Join(root, "legacy-workspaces")
+	workspaceManager := workspace.NewManager(workspace.ManagerConfig{WorkspacesRoot: workspacesRoot})
+	server := &Server{
+		cfg: Config{
+			LegacyWorkspacesRoot:  legacyWorkspacesRoot,
+			LegacyWorkspacePrefix: "chiridion-ws-",
+		},
+		containers:     container.NewTestManager(),
+		workspaces:     workspaceManager,
+		fs:             fsops.NewManager(workspacesRoot),
+		projectStates:  newProjectStateStore(filepath.Join(root, "state")),
+		migrationLocks: newMigrationLockStore(),
+	}
+
+	legacyRoot := filepath.Join(legacyWorkspacesRoot, "chiridion-ws-legacy-ws")
+	if err := os.MkdirAll(filepath.Join(legacyRoot, "web-app", "src"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyRoot, "web-app", "src", "main.ts"), []byte("fresh\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	serve := func(req *http.Request) *httptest.ResponseRecorder {
+		req.RemoteAddr = "127.0.0.1:1234"
+		rec := httptest.NewRecorder()
+		server.ServeHTTP(rec, req)
+		return rec
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/workspaces/org-1/legacy-ws/migration-lock", strings.NewReader(`{"workflowId":"workflow-1","ttlMs":60000}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := serve(req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected lock to succeed, got=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	importBody := `{"orgId":"org-1","workspaceId":"legacy-ws","sourcePaths":["/home/claude/web-app"],"ignoreGlobs":[]}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/projects/new-project/legacy-import", strings.NewReader(importBody))
+	req.Header.Set("Content-Type", "application/json")
+	rec = serve(req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected first import to succeed, got=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	projectRoot := filepath.Join(workspacesRoot, projectName("new-project"))
+	if err := os.WriteFile(filepath.Join(projectRoot, "stale.txt"), []byte("partial retry residue"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(projectRoot, "old-dir"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectRoot, "old-dir", "old.txt"), []byte("stale"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/v1/projects/new-project/legacy-import", strings.NewReader(importBody))
+	req.Header.Set("Content-Type", "application/json")
+	rec = serve(req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected retry import to succeed, got=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	if got, err := os.ReadFile(filepath.Join(projectRoot, "src", "main.ts")); err != nil || string(got) != "fresh\n" {
+		t.Fatalf("expected source file after retry import, err=%v got=%q", err, string(got))
+	}
+	if _, err := os.Stat(filepath.Join(projectRoot, "stale.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected stale file to be removed, err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(projectRoot, "old-dir")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected stale directory to be removed, err=%v", err)
+	}
+}
+
 func runGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", args...)
