@@ -307,8 +307,8 @@ func (s *Server) rejectCloudflareAPIProxyCaller(
 	}
 
 	sameSandbox := caller.Name == route.Name
-	sameWorkspace := caller.WorkspaceID == "" || caller.WorkspaceID == route.WorkspaceID
-	sameOrg := caller.OrgID == "" || caller.OrgID == route.OrgID
+	sameWorkspace := route.WorkspaceID == "" || caller.WorkspaceID == "" || caller.WorkspaceID == route.WorkspaceID
+	sameOrg := route.OrgID == "" || caller.OrgID == "" || caller.OrgID == route.OrgID
 	if !sameSandbox || !sameWorkspace || !sameOrg {
 		s.trace("cf_api_proxy_rejected_container_source", map[string]any{
 			"method":          req.Method,
@@ -360,7 +360,7 @@ func (s *Server) handleWorkspaceRoute(w http.ResponseWriter, req *http.Request, 
 		return nil
 	}
 
-	if strings.HasPrefix(route.Subpath, "/fs/") || route.Subpath == "/chat/messages" {
+	if strings.HasPrefix(route.Subpath, "/fs/") && !isReadOnlyFSRoute(req.Method, route.Subpath) {
 		if _, err := s.workspaces.Ensure(name); err != nil {
 			return err
 		}
@@ -474,6 +474,18 @@ func isLegacyWorkspaceMutation(method, subpath string) bool {
 		return false
 	}
 	return strings.HasPrefix(subpath, "/fs/") || subpath == "" || subpath == "/terminate"
+}
+
+func isReadOnlyFSRoute(method, subpath string) bool {
+	if method != http.MethodGet {
+		return false
+	}
+	switch subpath {
+	case "/fs/read", "/fs/list", "/fs/exists":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Server) handleChatMessages(w http.ResponseWriter, req *http.Request, name string) error {
@@ -1055,7 +1067,8 @@ func isInternalProxyHeader(key string) bool {
 
 func applyTrustedProxyHeaders(headers http.Header, route trustedProxyRoute, secret string) {
 	if strings.TrimSpace(secret) != "" {
-		headers.Set("X-Project-Runtime-Secret", strings.TrimSpace(secret))
+		trimmedSecret := strings.TrimSpace(secret)
+		headers.Set("X-Project-Runtime-Secret", trimmedSecret)
 	}
 	if strings.TrimSpace(route.OrgID) != "" {
 		headers.Set("X-Chiridion-Org-Id", route.OrgID)
@@ -1064,6 +1077,7 @@ func applyTrustedProxyHeaders(headers http.Header, route trustedProxyRoute, secr
 		headers.Set("X-Chiridion-Workspace-Id", route.WorkspaceID)
 	}
 	if strings.TrimSpace(route.ProjectID) != "" {
+		headers.Set("X-Project-Runtime-Project", route.ProjectID)
 		headers.Set("X-Chiridion-Project-Id", route.ProjectID)
 	}
 }

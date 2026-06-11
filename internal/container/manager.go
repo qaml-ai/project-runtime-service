@@ -83,6 +83,7 @@ type Manager struct {
 	containerMemory            string
 	containerCPUShares         string
 	containerRuntime           string
+	containerNetworkMode       string
 	containerNamePrefix        string
 	containerScope             string
 	containerUser              string
@@ -128,6 +129,7 @@ func NewManager(workspaces *workspace.Manager) *Manager {
 		containerMemory:            envString("CONTAINER_MEMORY", "16g"),
 		containerCPUShares:         envString("CONTAINER_CPU_SHARES", "2048"),
 		containerRuntime:           containerRuntime,
+		containerNetworkMode:       envString("PROJECT_RUNTIME_CONTAINER_NETWORK_MODE", "bridge"),
 		containerNamePrefix:        envString("CONTAINER_NAME_PREFIX", "prs-"),
 		containerScope:             envString("CONTAINER_SCOPE", "project-runtime-service"),
 		containerUser:              envString("PROJECT_RUNTIME_CONTAINER_USER", "runtime"),
@@ -529,7 +531,7 @@ func (m *Manager) ensureContainerUnlocked(name string, opts EnsureContainerOptio
 		Runtime:     m.containerRuntime,
 		Binds:       binds,
 		CapAdd:      capAdd,
-		NetworkMode: dockercontainer.NetworkMode("bridge"),
+		NetworkMode: dockercontainer.NetworkMode(m.containerNetworkMode),
 		ExtraHosts:  []string{"host.docker.internal:host-gateway"},
 		Resources: dockercontainer.Resources{
 			Memory:    memoryBytes,

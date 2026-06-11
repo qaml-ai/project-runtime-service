@@ -104,6 +104,9 @@ func (s *Server) handleProjectLegacyImport(w http.ResponseWriter, req *http.Requ
 	if err := publishLegacyImportStagingRoot(targetRoot, stagingRoot); err != nil {
 		return err
 	}
+	if err := s.workspaces.RepairOwner(route.Name); err != nil {
+		return fmt.Errorf("repair legacy import ownership: %w", err)
+	}
 
 	writeJSON(w, http.StatusOK, result)
 	return nil

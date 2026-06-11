@@ -75,8 +75,10 @@ func (s *Server) handleProjectRoute(w http.ResponseWriter, req *http.Request) er
 		if req.Method != http.MethodGet && s.rejectInsufficientHeadroom(w) {
 			return nil
 		}
-		if _, err := s.workspaces.Ensure(route.Name); err != nil {
-			return err
+		if !isReadOnlyFSRoute(req.Method, route.Subpath) {
+			if _, err := s.workspaces.Ensure(route.Name); err != nil {
+				return err
+			}
 		}
 		return s.handleProjectFSRoute(w, req, route)
 	}

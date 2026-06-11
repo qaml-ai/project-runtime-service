@@ -203,6 +203,13 @@ func (s *Server) restoreBackup(route ProjectRoute, backup backupInfo) error {
 		}
 		return fmt.Errorf("publish restored project: %w", err)
 	}
+	if err := s.workspaces.RepairOwner(route.Name); err != nil {
+		if targetExists {
+			_ = os.RemoveAll(targetDir)
+			_ = os.Rename(rollbackDir, targetDir)
+		}
+		return fmt.Errorf("repair restored project ownership: %w", err)
+	}
 	if targetExists {
 		_ = os.RemoveAll(rollbackDir)
 	}

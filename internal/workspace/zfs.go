@@ -51,7 +51,7 @@ func (m *Manager) ensureZFSDataset(workspaceName, mountpoint string) error {
 			return err
 		}
 	}
-	if err := ensureWorkspaceOwner(mountpoint); err != nil {
+	if err := ensureWorkspaceRootOwner(mountpoint); err != nil {
 		return err
 	}
 	return nil
@@ -146,7 +146,7 @@ func (m *Manager) CloneZFS(sourceName, targetName string) error {
 			return err
 		}
 	}
-	if err := ensureWorkspaceOwner(targetDir); err != nil {
+	if err := ensureWorkspaceRootOwner(targetDir); err != nil {
 		return err
 	}
 

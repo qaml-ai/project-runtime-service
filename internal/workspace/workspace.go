@@ -126,7 +126,7 @@ func (m *Manager) Ensure(name string) (string, error) {
 	existing := m.mounts[name]
 	m.mu.RUnlock()
 	if existing != nil && m.isWorkspaceReady(existing.MergedDir) {
-		if err := ensureWorkspaceOwner(existing.MergedDir); err != nil {
+		if err := ensureWorkspaceRootOwner(existing.MergedDir); err != nil {
 			return "", err
 		}
 		return existing.MergedDir, nil
@@ -141,7 +141,7 @@ func (m *Manager) Ensure(name string) (string, error) {
 		if err := os.MkdirAll(mount.MergedDir, 0o700); err != nil {
 			return "", err
 		}
-		if err := ensureWorkspaceOwner(mount.MergedDir); err != nil {
+		if err := ensureWorkspaceRootOwner(mount.MergedDir); err != nil {
 			return "", err
 		}
 
@@ -215,6 +215,9 @@ func (m *Manager) CloneReflink(sourceName, targetName string) error {
 	}
 	if err := os.Rename(targetTmp, targetDir); err != nil {
 		return fmt.Errorf("publish target clone: %w", err)
+	}
+	if err := ensureWorkspaceRootOwner(targetDir); err != nil {
+		return err
 	}
 	if err := m.ensureProjectQuota(targetName, targetDir); err != nil {
 		return err
@@ -300,6 +303,26 @@ func ensureWorkspaceOwner(path string) error {
 		return fmt.Errorf("set workspace mode: %w", err)
 	}
 	return nil
+}
+
+func ensureWorkspaceRootOwner(path string) error {
+	if runtime.GOOS != "linux" || os.Geteuid() != 0 {
+		return nil
+	}
+	if err := os.Lchown(path, 1001, 1001); err != nil {
+		return fmt.Errorf("set workspace root owner for %s: %w", path, err)
+	}
+	if err := os.Chmod(path, 0o700); err != nil {
+		return fmt.Errorf("set workspace root mode: %w", err)
+	}
+	return nil
+}
+
+func (m *Manager) RepairOwner(name string) error {
+	if strings.TrimSpace(name) == "" {
+		return errors.New("workspace name required")
+	}
+	return ensureWorkspaceOwner(filepath.Join(m.cfg.WorkspacesRoot, name))
 }
 
 func (m *Manager) ensureProjectQuota(workspaceName, workspaceDir string) error {
