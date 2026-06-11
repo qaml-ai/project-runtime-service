@@ -177,6 +177,9 @@ func (s *Server) restoreBackup(route ProjectRoute, backup backupInfo) error {
 	if err := os.MkdirAll(extractDir, 0o700); err != nil {
 		return err
 	}
+	if err := setRuntimePathOwner(extractDir); err != nil {
+		return err
+	}
 	defer func() {
 		_ = os.RemoveAll(extractDir)
 	}()
@@ -202,13 +205,6 @@ func (s *Server) restoreBackup(route ProjectRoute, backup backupInfo) error {
 			_ = os.Rename(rollbackDir, targetDir)
 		}
 		return fmt.Errorf("publish restored project: %w", err)
-	}
-	if err := s.workspaces.RepairOwner(route.Name); err != nil {
-		if targetExists {
-			_ = os.RemoveAll(targetDir)
-			_ = os.Rename(rollbackDir, targetDir)
-		}
-		return fmt.Errorf("repair restored project ownership: %w", err)
 	}
 	if targetExists {
 		_ = os.RemoveAll(rollbackDir)
@@ -462,12 +458,18 @@ func extractTarGz(sourcePath, targetDir string) error {
 			if err := os.MkdirAll(targetPath, mode); err != nil {
 				return err
 			}
+			if err := setRuntimeOwnerPathChain(targetDir, targetPath); err != nil {
+				return err
+			}
 			continue
 		}
 		if !header.FileInfo().Mode().IsRegular() {
 			continue
 		}
 		if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+			return err
+		}
+		if err := setRuntimeOwnerPathChain(targetDir, filepath.Dir(targetPath)); err != nil {
 			return err
 		}
 		output, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
@@ -479,6 +481,9 @@ func extractTarGz(sourcePath, targetDir string) error {
 			return err
 		}
 		if err := output.Close(); err != nil {
+			return err
+		}
+		if err := setRuntimePathOwner(targetPath); err != nil {
 			return err
 		}
 	}

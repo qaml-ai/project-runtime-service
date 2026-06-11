@@ -65,6 +65,9 @@ func (s *Server) handleProjectLegacyImport(w http.ResponseWriter, req *http.Requ
 	if err != nil {
 		return err
 	}
+	if err := setRuntimePathOwner(stagingRoot); err != nil {
+		return err
+	}
 
 	result := legacyImportResult{Success: true}
 	singleSource := len(payload.SourcePaths) == 1
@@ -103,9 +106,6 @@ func (s *Server) handleProjectLegacyImport(w http.ResponseWriter, req *http.Requ
 	}
 	if err := publishLegacyImportStagingRoot(targetRoot, stagingRoot); err != nil {
 		return err
-	}
-	if err := s.workspaces.RepairOwner(route.Name); err != nil {
-		return fmt.Errorf("repair legacy import ownership: %w", err)
 	}
 
 	writeJSON(w, http.StatusOK, result)
@@ -149,6 +149,7 @@ type legacyImportCopyTask struct {
 	Source      string
 	Destination string
 	Info        os.FileInfo
+	OwnerRoot   string
 }
 
 func legacyWorkspaceHostPath(root, sandboxPath string) (string, error) {
@@ -210,9 +211,12 @@ func planLegacyImportPath(source, destination string, ignoreGlobs []string) (leg
 		return stats, nil, err
 	}
 	if !info.IsDir() {
-		return stats, []legacyImportCopyTask{{Source: source, Destination: destination, Info: info}}, nil
+		return stats, []legacyImportCopyTask{{Source: source, Destination: destination, Info: info, OwnerRoot: filepath.Dir(destination)}}, nil
 	}
 	if err := os.MkdirAll(destination, info.Mode().Perm()); err != nil {
+		return stats, nil, err
+	}
+	if err := setRuntimeOwnerPathChain(destination, destination); err != nil {
 		return stats, nil, err
 	}
 	err = filepath.WalkDir(source, func(path string, entry os.DirEntry, walkErr error) error {
@@ -239,9 +243,12 @@ func planLegacyImportPath(source, destination string, ignoreGlobs []string) (leg
 			return err
 		}
 		if entry.IsDir() {
-			return os.MkdirAll(target, info.Mode().Perm())
+			if err := os.MkdirAll(target, info.Mode().Perm()); err != nil {
+				return err
+			}
+			return setRuntimeOwnerPathChain(destination, target)
 		}
-		tasks = append(tasks, legacyImportCopyTask{Source: path, Destination: target, Info: info})
+		tasks = append(tasks, legacyImportCopyTask{Source: path, Destination: target, Info: info, OwnerRoot: destination})
 		return nil
 	})
 	return stats, tasks, err
@@ -286,7 +293,7 @@ func copyLegacyImportTasks(tasks []legacyImportCopyTask) (legacyImportCopyStats,
 				if hasErr() {
 					continue
 				}
-				files, bytes, err := copyLegacyImportFile(task.Source, task.Destination, task.Info)
+				files, bytes, err := copyLegacyImportFile(task.Source, task.Destination, task.Info, task.OwnerRoot)
 				if err != nil {
 					setErr(err)
 					continue
@@ -313,7 +320,7 @@ func copyLegacyImportTasks(tasks []legacyImportCopyTask) (legacyImportCopyStats,
 	return stats, nil
 }
 
-func copyLegacyImportFile(source, destination string, info os.FileInfo) (int64, int64, error) {
+func copyLegacyImportFile(source, destination string, info os.FileInfo, ownerRoot string) (int64, int64, error) {
 	if info.Mode()&os.ModeSymlink != 0 {
 		target, err := os.Readlink(source)
 		if err != nil {
@@ -322,8 +329,14 @@ func copyLegacyImportFile(source, destination string, info os.FileInfo) (int64, 
 		if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
 			return 0, 0, err
 		}
+		if err := setRuntimeOwnerPathChain(ownerRoot, filepath.Dir(destination)); err != nil {
+			return 0, 0, err
+		}
 		_ = os.Remove(destination)
 		if err := os.Symlink(target, destination); err != nil {
+			return 0, 0, err
+		}
+		if err := setRuntimePathOwner(destination); err != nil {
 			return 0, 0, err
 		}
 		return 1, 0, nil
@@ -332,6 +345,9 @@ func copyLegacyImportFile(source, destination string, info os.FileInfo) (int64, 
 		return 0, 0, nil
 	}
 	if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
+		return 0, 0, err
+	}
+	if err := setRuntimeOwnerPathChain(ownerRoot, filepath.Dir(destination)); err != nil {
 		return 0, 0, err
 	}
 	input, err := os.Open(source)
@@ -350,6 +366,9 @@ func copyLegacyImportFile(source, destination string, info os.FileInfo) (int64, 
 	}
 	if closeErr != nil {
 		return 0, 0, closeErr
+	}
+	if err := setRuntimePathOwner(destination); err != nil {
+		return 0, 0, err
 	}
 	return 1, written, nil
 }

@@ -126,9 +126,6 @@ func (m *Manager) Ensure(name string) (string, error) {
 	existing := m.mounts[name]
 	m.mu.RUnlock()
 	if existing != nil && m.isWorkspaceReady(existing.MergedDir) {
-		if err := ensureWorkspaceRootOwner(existing.MergedDir); err != nil {
-			return "", err
-		}
 		return existing.MergedDir, nil
 	}
 
@@ -284,45 +281,19 @@ func (m *Manager) isWorkspaceReady(path string) bool {
 	return err == nil && info.IsDir()
 }
 
-func ensureWorkspaceOwner(path string) error {
-	if runtime.GOOS != "linux" || os.Geteuid() != 0 {
-		return nil
-	}
-	if err := filepath.WalkDir(path, func(current string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if err := os.Lchown(current, 1001, 1001); err != nil {
-			return fmt.Errorf("set workspace owner for %s: %w", current, err)
-		}
-		return nil
-	}); err != nil {
-		return fmt.Errorf("set workspace tree owner: %w", err)
-	}
-	if err := os.Chmod(path, 0o700); err != nil {
-		return fmt.Errorf("set workspace mode: %w", err)
-	}
-	return nil
-}
-
 func ensureWorkspaceRootOwner(path string) error {
 	if runtime.GOOS != "linux" || os.Geteuid() != 0 {
 		return nil
 	}
-	if err := os.Lchown(path, 1001, 1001); err != nil {
+	uid := envInt("PROJECT_RUNTIME_FILE_OWNER_UID", 1001)
+	gid := envInt("PROJECT_RUNTIME_FILE_OWNER_GID", 1001)
+	if err := os.Lchown(path, uid, gid); err != nil {
 		return fmt.Errorf("set workspace root owner for %s: %w", path, err)
 	}
 	if err := os.Chmod(path, 0o700); err != nil {
 		return fmt.Errorf("set workspace root mode: %w", err)
 	}
 	return nil
-}
-
-func (m *Manager) RepairOwner(name string) error {
-	if strings.TrimSpace(name) == "" {
-		return errors.New("workspace name required")
-	}
-	return ensureWorkspaceOwner(filepath.Join(m.cfg.WorkspacesRoot, name))
 }
 
 func (m *Manager) ensureProjectQuota(workspaceName, workspaceDir string) error {
@@ -621,6 +592,18 @@ func envString(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func envInt(key string, fallback int) int {
+	raw, ok := os.LookupEnv(key)
+	if !ok || strings.TrimSpace(raw) == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(raw)
+	if err != nil {
+		return fallback
+	}
+	return parsed
 }
 
 func envBool(key string, fallback bool) bool {

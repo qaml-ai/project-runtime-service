@@ -299,7 +299,7 @@ func (m *Manager) RestoreZFSBackup(workspaceName, sourcePath string) error {
 			return err
 		}
 	}
-	if err := ensureWorkspaceOwner(targetDir); err != nil {
+	if err := ensureWorkspaceRootOwner(targetDir); err != nil {
 		rollbackPublish()
 		return err
 	}
@@ -396,7 +396,7 @@ func (m *Manager) ReplaceWithDirectory(workspaceName, sourceDir string) error {
 			return err
 		}
 	}
-	if err := ensureWorkspaceOwner(targetDir); err != nil {
+	if err := ensureWorkspaceRootOwner(targetDir); err != nil {
 		rollbackPublish()
 		return err
 	}
