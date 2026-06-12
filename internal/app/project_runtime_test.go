@@ -157,6 +157,55 @@ func TestForwardProjectCloudflareAPIProxyRequest(t *testing.T) {
 	}
 }
 
+func TestForwardProjectCloudflareAPIProxyRequestStripsSpoofedIdentityHeaders(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Header.Get("X-Chiridion-Org-Id") != "" {
+			t.Fatalf("unexpected spoofed org forwarding header: %q", req.Header.Get("X-Chiridion-Org-Id"))
+		}
+		if req.Header.Get("X-Chiridion-Workspace-Id") != "" {
+			t.Fatalf("unexpected spoofed workspace forwarding header: %q", req.Header.Get("X-Chiridion-Workspace-Id"))
+		}
+		if req.Header.Get("X-Chiridion-Project-Id") != "pizza-delivery" {
+			t.Fatalf("expected trusted project header to replace spoofed value, got %q", req.Header.Get("X-Chiridion-Project-Id"))
+		}
+		if req.Header.Get("X-Project-Runtime-Project") != "pizza-delivery" {
+			t.Fatalf("expected trusted runtime project header to replace spoofed value, got %q", req.Header.Get("X-Project-Runtime-Project"))
+		}
+		if req.Header.Get("X-Project-Runtime-Secret") != "shared-secret" {
+			t.Fatalf("expected trusted secret header to replace spoofed value, got %q", req.Header.Get("X-Project-Runtime-Secret"))
+		}
+		_, _ = w.Write([]byte(`{"success":true}`))
+	}))
+	defer upstream.Close()
+
+	server := &Server{
+		cfg: Config{
+			WorkerBaseURL:             upstream.URL,
+			ProjectRuntimeProxySecret: "shared-secret",
+		},
+		httpClient: &http.Client{Timeout: 10 * time.Second},
+	}
+	route := trustedProxyRoute{
+		Name:      "project-runtime-pizza",
+		ProjectID: "pizza-delivery",
+		Subpath:   "/client/v4/accounts/acct",
+	}
+	req := httptest.NewRequest(http.MethodGet, "/deploy/client/v4/accounts/acct", nil)
+	req.Header.Set("X-Chiridion-Org-Id", "spoofed-org")
+	req.Header.Set("X-Chiridion-Workspace-Id", "spoofed-workspace")
+	req.Header.Set("X-Chiridion-Project-Id", "spoofed-project")
+	req.Header.Set("X-Project-Runtime-Project", "spoofed-runtime-project")
+	req.Header.Set("X-Project-Runtime-Secret", "spoofed-secret")
+	rec := httptest.NewRecorder()
+
+	if err := server.forwardCloudflareAPIProxyRequest(rec, req, route); err != nil {
+		t.Fatalf("forwardCloudflareAPIProxyRequest failed: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got=%d want=%d", rec.Code, http.StatusOK)
+	}
+}
+
 func TestForwardProjectCloudflareAPIProxyRequestAllowsMTLSOnlyAuth(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if req.URL.Path != "/client/v4/accounts/acct" {
@@ -281,6 +330,55 @@ func TestForwardProjectCloudflareAPIProxyRequestRequiresAuthConfig(t *testing.T)
 		},
 		httpClient: &http.Client{Timeout: 10 * time.Second},
 	}
+	route := trustedProxyRoute{
+		Name:      "project-runtime-pizza",
+		ProjectID: "pizza-delivery",
+		Subpath:   "/client/v4/accounts/acct",
+	}
+	req := httptest.NewRequest(http.MethodGet, "/deploy/client/v4/accounts/acct", nil)
+	rec := httptest.NewRecorder()
+
+	if err := server.forwardCloudflareAPIProxyRequest(rec, req, route); err != nil {
+		t.Fatalf("forwardCloudflareAPIProxyRequest failed: %v", err)
+	}
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("unexpected status: got=%d want=%d", rec.Code, http.StatusServiceUnavailable)
+	}
+}
+
+func TestForwardProjectCloudflareAPIProxyRequestRequiresCapabilityAuthConfig(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Fatal("unexpected upstream request without auth")
+	}))
+	defer upstream.Close()
+
+	server := &Server{
+		httpClient: &http.Client{Timeout: 10 * time.Second},
+		proxyCapabilities: map[string]ProxyCapability{
+			cloudflareAPIProxyCapabilityName: {
+				Name:   cloudflareAPIProxyCapabilityName,
+				Target: upstream.URL,
+			},
+		},
+	}
+	route := trustedProxyRoute{
+		Name:      "project-runtime-pizza",
+		ProjectID: "pizza-delivery",
+		Subpath:   "/client/v4/accounts/acct",
+	}
+	req := httptest.NewRequest(http.MethodGet, "/deploy/client/v4/accounts/acct", nil)
+	rec := httptest.NewRecorder()
+
+	if err := server.forwardCloudflareAPIProxyRequest(rec, req, route); err != nil {
+		t.Fatalf("forwardCloudflareAPIProxyRequest failed: %v", err)
+	}
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("unexpected status: got=%d want=%d", rec.Code, http.StatusServiceUnavailable)
+	}
+}
+
+func TestForwardProjectCloudflareAPIProxyRequestRequiresUpstreamConfig(t *testing.T) {
+	server := &Server{httpClient: &http.Client{Timeout: 10 * time.Second}}
 	route := trustedProxyRoute{
 		Name:      "project-runtime-pizza",
 		ProjectID: "pizza-delivery",

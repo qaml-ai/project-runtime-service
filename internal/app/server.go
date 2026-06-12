@@ -638,7 +638,7 @@ func (s *Server) forwardCloudflareAPIProxyRequest(w http.ResponseWriter, req *ht
 	if err != nil {
 		return err
 	}
-	copyHeaders(forwardReq.Header, req.Header)
+	copyProxyHeaders(forwardReq.Header, req.Header)
 	applyProxyCapabilityHeaders(forwardReq.Header, capability)
 	applyTrustedProxyHeaders(forwardReq.Header, route, secret)
 
