@@ -223,9 +223,6 @@ func (s *Server) serveDockerProxy(w http.ResponseWriter, req *http.Request) {
 			errorJSON(w, err.Error(), status)
 			return
 		}
-		if s.rejectCloudflareAPIProxyCaller(w, req, trustedRoute, sourceIP) {
-			return
-		}
 		s.containers.TouchContainer(trustedRoute.Name, fmt.Sprintf("project_cf_api_proxy:%s:%s", req.Method, subpath))
 		if err := s.forwardCloudflareAPIProxyRequest(w, req, trustedRoute); err != nil {
 			log.Printf("[ProjectRuntime] docker project proxy request error: %v", err)
