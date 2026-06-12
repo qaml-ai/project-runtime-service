@@ -196,6 +196,84 @@ func TestForwardProjectCloudflareAPIProxyRequestAllowsMTLSOnlyAuth(t *testing.T)
 	}
 }
 
+func TestForwardProjectCloudflareAPIProxyRequestUsesCapabilityTarget(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path != "/client/v4/accounts/acct/workers/scripts/task-trellis/secrets" {
+			t.Fatalf("unexpected upstream path: %s", req.URL.Path)
+		}
+		if req.Header.Get("X-Chiridion-Project-Id") != "task-trellis" {
+			t.Fatalf("missing project forwarding header: %q", req.Header.Get("X-Chiridion-Project-Id"))
+		}
+		_, _ = w.Write([]byte(`{"success":true}`))
+	}))
+	defer upstream.Close()
+
+	server := &Server{
+		cfg: Config{
+			ProxyMTLSClientCertFile: "/etc/qaml-project-runtime/mtls/client.crt",
+			ProxyMTLSClientKeyFile:  "/etc/qaml-project-runtime/mtls/client.key",
+		},
+		httpClient: &http.Client{Timeout: 10 * time.Second},
+		proxyCapabilities: map[string]ProxyCapability{
+			cloudflareAPIProxyCapabilityName: {
+				Name:   cloudflareAPIProxyCapabilityName,
+				Target: upstream.URL,
+			},
+		},
+	}
+	route := trustedProxyRoute{
+		Name:      "project-runtime-task-trellis",
+		ProjectID: "task-trellis",
+		Subpath:   "/client/v4/accounts/acct/workers/scripts/task-trellis/secrets",
+	}
+	req := httptest.NewRequest(http.MethodGet, "/deploy/client/v4/accounts/acct/workers/scripts/task-trellis/secrets", nil)
+	rec := httptest.NewRecorder()
+
+	if err := server.forwardCloudflareAPIProxyRequest(rec, req, route); err != nil {
+		t.Fatalf("forwardCloudflareAPIProxyRequest failed: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got=%d want=%d", rec.Code, http.StatusOK)
+	}
+}
+
+func TestForwardProjectCloudflareAPIProxyRequestAllowsCapabilityHeaderAuth(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Header.Get("X-Project-Runtime-Secret") != "capability-secret" {
+			t.Fatalf("missing capability auth header: %q", req.Header.Get("X-Project-Runtime-Secret"))
+		}
+		_, _ = w.Write([]byte(`{"success":true}`))
+	}))
+	defer upstream.Close()
+
+	server := &Server{
+		httpClient: &http.Client{Timeout: 10 * time.Second},
+		proxyCapabilities: map[string]ProxyCapability{
+			cloudflareAPIProxyCapabilityName: {
+				Name:   cloudflareAPIProxyCapabilityName,
+				Target: upstream.URL,
+				Headers: map[string]string{
+					"X-Project-Runtime-Secret": "capability-secret",
+				},
+			},
+		},
+	}
+	route := trustedProxyRoute{
+		Name:      "project-runtime-pizza",
+		ProjectID: "pizza-delivery",
+		Subpath:   "/client/v4/accounts/acct",
+	}
+	req := httptest.NewRequest(http.MethodGet, "/deploy/client/v4/accounts/acct", nil)
+	rec := httptest.NewRecorder()
+
+	if err := server.forwardCloudflareAPIProxyRequest(rec, req, route); err != nil {
+		t.Fatalf("forwardCloudflareAPIProxyRequest failed: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got=%d want=%d", rec.Code, http.StatusOK)
+	}
+}
+
 func TestForwardProjectCloudflareAPIProxyRequestRequiresAuthConfig(t *testing.T) {
 	server := &Server{
 		cfg: Config{

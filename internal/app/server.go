@@ -42,6 +42,8 @@ type trustedProxyRoute struct {
 	Subpath     string
 }
 
+const cloudflareAPIProxyCapabilityName = "camelai-cloudflare-api"
+
 type Server struct {
 	cfg        Config
 	containers *container.Manager
@@ -616,13 +618,13 @@ func (s *Server) handleChatMessages(w http.ResponseWriter, req *http.Request, na
 }
 
 func (s *Server) forwardCloudflareAPIProxyRequest(w http.ResponseWriter, req *http.Request, route trustedProxyRoute) error {
-	base := strings.TrimRight(strings.TrimSpace(s.cfg.WorkerBaseURL), "/")
+	base, capability := s.cloudflareAPIProxyBaseURL()
 	if base == "" {
 		errorJSON(w, "Cloudflare API proxy upstream not configured", http.StatusServiceUnavailable)
 		return nil
 	}
 	secret := strings.TrimSpace(s.cfg.ProjectRuntimeProxySecret)
-	if secret == "" && !s.hasOutboundProxyMTLS() {
+	if secret == "" && !s.hasOutboundProxyMTLS() && !proxyCapabilityHasAuth(capability) {
 		errorJSON(w, "Cloudflare API proxy auth not configured", http.StatusServiceUnavailable)
 		return nil
 	}
@@ -637,6 +639,7 @@ func (s *Server) forwardCloudflareAPIProxyRequest(w http.ResponseWriter, req *ht
 		return err
 	}
 	copyHeaders(forwardReq.Header, req.Header)
+	applyProxyCapabilityHeaders(forwardReq.Header, capability)
 	applyTrustedProxyHeaders(forwardReq.Header, route, secret)
 
 	resp, err := s.httpClient.Do(forwardReq)
@@ -656,6 +659,43 @@ func (s *Server) forwardCloudflareAPIProxyRequest(w http.ResponseWriter, req *ht
 		return err
 	}
 	return nil
+}
+
+func (s *Server) cloudflareAPIProxyBaseURL() (string, ProxyCapability) {
+	base := strings.TrimRight(strings.TrimSpace(s.cfg.WorkerBaseURL), "/")
+	if base != "" {
+		return base, ProxyCapability{}
+	}
+	capability, ok := s.proxyCapabilities[cloudflareAPIProxyCapabilityName]
+	if !ok {
+		return "", ProxyCapability{}
+	}
+	return strings.TrimRight(strings.TrimSpace(capability.Target), "/"), capability
+}
+
+func proxyCapabilityHasAuth(capability ProxyCapability) bool {
+	if strings.TrimSpace(capability.BearerToken) != "" {
+		return true
+	}
+	for key, value := range capability.Headers {
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		normalized := strings.ToLower(strings.TrimSpace(key))
+		if normalized == "authorization" || strings.HasPrefix(normalized, "x-project-runtime-") {
+			return true
+		}
+	}
+	return false
+}
+
+func applyProxyCapabilityHeaders(headers http.Header, capability ProxyCapability) {
+	for key, value := range capability.Headers {
+		headers.Set(key, value)
+	}
+	if strings.TrimSpace(capability.BearerToken) != "" {
+		headers.Set("Authorization", "Bearer "+strings.TrimSpace(capability.BearerToken))
+	}
 }
 
 func (s *Server) hasOutboundProxyMTLS() bool {
